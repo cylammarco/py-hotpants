@@ -1,5 +1,6 @@
 import glob
 import os
+import subprocess
 import sys
 import warnings
 
@@ -15,9 +16,10 @@ from astropy.table import Table
 from astropy.visualization import simple_norm
 from matplotlib import pyplot as plt
 from photutils.psf import extract_stars
+from scipy.optimize import curve_fit
 
 
-def genrate_file_list(input_path, output_path, filetype='fits'):
+def generate_file_list(input_path, output_path, filetype='fits'):
     file_list = glob.glob(os.path.join(input_path, "*." + filetype))
     np.savetxt(os.path.join(output_path, 'file_list.txt'), file_list, fmt='%s')
     return file_list
@@ -365,7 +367,8 @@ def align_images(ref,
                      overwrite=overwrite)
 
     np.savetxt(os.path.join(output_path, 'aligned_file_list.txt'),
-               aligned_file_list, fmt='%s')
+               aligned_file_list,
+               fmt='%s')
 
     # return the file list for the aligned images, and the combiner if stacking
     if stack:
@@ -393,58 +396,182 @@ def get_background(data, box_size=(50, 50), filter_size=(3, 3), sigma=3.):
                                  bkg_estimator=bkg_estimator)
     return bkg
 
-def build_psf(data,
-              threshold=100.,
-              size=25,
-              epsf_oversampling=4,
-              epsf_maxiters=3,
-              epsf_progress_bar=True,
-              show_stamps=False,
-              stamps_nrows=5,
-              stamps_ncols=5,
-              figsize=(20, 20)):
-    '''
-    data is best background subtracted
-    '''
-    # detect peaks
-    peaks_tbl = photutils.find_peaks(data, threshold=threshold)
 
-    # pick isolated point sources
-    hsize = (size - 1) // 2
-    x = peaks_tbl['x_peak']
-    y = peaks_tbl['y_peak']
-    mask = ((x > hsize) & (x < (data.shape[1] - 1 - hsize)) & (y > hsize) &
-            (y < (data.shape[0] - 1 - hsize)))
+def get_stars(data, stars_tbl=None, threshold=100., size=25):
+    if stars_tbl is None:
+        # detect peaks
+        peaks_tbl = photutils.find_peaks(data, threshold=threshold)
+        peaks_sort_mask = np.argsort(-peaks_tbl['peak_value'])
 
-    stars_tbl = Table()
-    stars_tbl['x'] = x[mask]
-    stars_tbl['y'] = y[mask]
+        # remove sources near the edge
+        hsize = (size - 1) // 2
+        x = peaks_tbl['x_peak'][peaks_sort_mask]
+        y = peaks_tbl['y_peak'][peaks_sort_mask]
+        mask = ((x > hsize) & (x < (data.shape[1] - 1 - hsize)) & (y > hsize) &
+                (y < (data.shape[0] - 1 - hsize)))
+
+        stars_tbl = Table()
+        stars_tbl['x'] = x[mask]
+        stars_tbl['y'] = y[mask]
 
     nddata = NDData(data=data)
     stars = extract_stars(nddata, stars_tbl, size=size)
-    epsf_builder = photutils.EPSFBuilder(oversampling=epsf_oversampling,
-                                         maxiters=epsf_maxiters,
-                                         progress_bar=epsf_progress_bar)
+
+    return stars, stars_tbl
+
+
+def build_psf(stars,
+              epsf_oversampling=4,
+              epsf_smoothing_kernel='quartic',
+              epsf_recentering_maxiters=20,
+              epsf_maxiters=10,
+              epsf_progress_bar=True,
+              epsf_norm_radius=5.5,
+              epsf_shift_val=0.5,
+              epsf_recentering_boxsize=(5, 5),
+              epsf_center_accuracy=0.001,
+              show_stamps=False,
+              stamps_nrows=5,
+              stamps_ncols=5,
+              figsize=(10, 10)):
+    '''
+    data is best background subtracted
+    '''
+    epsf_builder = photutils.EPSFBuilder(
+        oversampling=epsf_oversampling,
+        recentering_maxiters=epsf_recentering_maxiters,
+        maxiters=epsf_maxiters,
+        progress_bar=epsf_progress_bar)
     epsf, fitted_stars = epsf_builder(stars)
 
     if show_stamps:
         nrows = stamps_nrows
         ncols = stamps_ncols
-        fig, ax = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize,
+        fig, ax = plt.subplots(nrows=nrows,
+                               ncols=ncols,
+                               figsize=figsize,
                                squeeze=True)
         ax = ax.ravel()
-        for i in range(nrows*ncols):
+        for i in range(nrows * ncols):
             norm = simple_norm(stars[i], 'log', percent=99.)
-            ax[i].imshow(stars[i], norm=norm, origin='lower', cmap='viridis')
-
+            try:
+                ax[i].imshow(stars[i],
+                             norm=norm,
+                             origin='lower',
+                             cmap='viridis')
+            except:
+                pass
         plt.show()
 
     return epsf, fitted_stars
 
 
-def get_fwhm():
+def _gaus(x, a, b, x0, sigma):
+    """
+    Simple Gaussian function.
+    Parameters
+    ----------
+    x: float or 1-d numpy array
+        The data to evaluate the Gaussian over
+    a: float
+        the amplitude
+    b: float
+        the constant offset
+    x0: float
+        the center of the Gaussian
+    sigma: float
+        the width of the Gaussian
+    Returns
+    -------
+    Array or float of same type as input (x).
+    """
+    return a * np.exp(-(x - x0)**2 / (2 * sigma**2)) + b
+
+
+def fit_gaussian_for_fwhm(psf, sigma=False):
+    '''
+    Fit gaussians to the psf
+    Patameters
+    ----------
+    psf: np.ndarray.array
+        The 2D PSF profile
+    sigma: boolean
+        Set to True to return sigma instead of the FWHM
+    '''
+    psf_x = np.sum(psf.data, axis=0)
+    psf_y = np.sum(psf.data, axis=1)
+    pguess_x = max(psf_x), 0, len(psf_x) / 2., len(psf_x) / 10.
+    pguess_y = max(psf_y), 0, len(psf_y) / 2., len(psf_y) / 10.
     # see also https://photutils.readthedocs.io/en/stable/detection.html
-    pass
+    popt_x, _ = curve_fit(_gaus, np.arange(len(psf_x)), psf_x, p0=pguess_x)
+    popt_y, _ = curve_fit(_gaus, np.arange(len(psf_y)), psf_y, p0=pguess_y)
+    sigma_x = popt_x[3]
+    sigma_y = popt_y[3]
+    if sigma:
+        return sigma_x, sigma_y
+    else:
+        return sigma_x * 2.355, sigma_y * 2.355
+
+
+def get_all_fwhm(file_list,
+                 stars_tbl,
+                 sigma=False,
+                 bkg_box_size=(50, 50),
+                 bkg_filter_size=(5, 5),
+                 bkg_sigma=3.,
+                 stars_threshold=500.,
+                 stars_size=25,
+                 epsf_oversampling=4,
+                 epsf_smoothing_kernel='quartic',
+                 epsf_recentering_maxiters=20,
+                 epsf_maxiters=10,
+                 epsf_progress_bar=True,
+                 epsf_norm_radius=5.5,
+                 epsf_shift_val=0.5,
+                 epsf_recentering_boxsize=(5, 5),
+                 epsf_center_accuracy=0.001,
+                 show_stamps=False,
+                 stamps_nrows=5,
+                 stamps_ncols=5,
+                 figsize=(10, 10)):
+    sigma_x = []
+    sigma_y = []
+    for filepath in file_list:
+        data_i = fits.open(filepath)[0].data
+        bkg_i = get_background(data_i,
+                               box_size=bkg_box_size,
+                               filter_size=bkg_filter_size,
+                               sigma=bkg_sigma)
+        stars_i, _ = get_stars(data_i - bkg_i.background,
+                               stars_tbl=stars_tbl,
+                               threshold=stars_threshold,
+                               size=stars_size)
+        # build the psf using the stacked image
+        # see also https://photutils.readthedocs.io/en/stable/epsf.html
+        epsf_i, _ = build_psf(
+            stars_i,
+            epsf_oversampling=epsf_oversampling,
+            epsf_smoothing_kernel=epsf_smoothing_kernel,
+            epsf_recentering_maxiters=epsf_recentering_maxiters,
+            epsf_maxiters=epsf_maxiters,
+            epsf_progress_bar=epsf_progress_bar,
+            epsf_norm_radius=epsf_norm_radius,
+            epsf_shift_val=epsf_shift_val,
+            epsf_recentering_boxsize=epsf_recentering_boxsize,
+            epsf_center_accuracy=epsf_center_accuracy,
+            show_stamps=show_stamps,
+            stamps_nrows=stamps_nrows,
+            stamps_ncols=stamps_ncols)
+        sigma = fit_gaussian_for_fwhm(epsf_i.data, sigma=sigma)
+        if sigma:
+            sigma_x.append(sigma[0] / epsf_oversampling)
+            sigma_y.append(sigma[1] / epsf_oversampling)
+        else:
+            sigma_x.append(sigma[0])
+            sigma_y.append(sigma[1])
+
+    return sigma_x, sigma_y
+
 
 def find_star():
     # see also https://photutils.readthedocs.io/en/stable/detection.html
@@ -452,8 +579,366 @@ def find_star():
     # photutils.IRAFStarFinder()
     pass
 
+
 def do_photometry():
     # see also https://photutils.readthedocs.io/en/latest/psf.html
     pass
 
 
+def generate_hotpants_script(ref_path,
+                             aligned_file_list,
+                             sigma_ref,
+                             sigma_list,
+                             hotpants='hotpants',
+                             filename='diff_image.sh',
+                             overwrite=True,
+                             tu=None,
+                             tuk=None,
+                             tl=None,
+                             tg=None,
+                             tr=None,
+                             tp=None,
+                             tni=None,
+                             tmi=None,
+                             iu=None,
+                             iuk=None,
+                             il=None,
+                             ig=None,
+                             ir=None,
+                             ip=None,
+                             ini=None,
+                             imi=None,
+                             ki=None,
+                             r=None,
+                             kcs=None,
+                             ft=None,
+                             sft=None,
+                             nft=None,
+                             vmins=None,
+                             mous=None,
+                             omi=None,
+                             gd=None,
+                             nrx=None,
+                             nry=None,
+                             rf=None,
+                             rkw=None,
+                             nsx=None,
+                             nsy=None,
+                             ssf=None,
+                             cmpfile=None,
+                             afssc=None,
+                             nss=None,
+                             rss=None,
+                             savexy=None,
+                             n=None,
+                             fom=None,
+                             sconv=None,
+                             ko=None,
+                             bgo=None,
+                             ssig=None,
+                             ks=None,
+                             kfm=None,
+                             okn=None,
+                             fi=None,
+                             fin=None,
+                             convvar=None,
+                             oni=None,
+                             ond=None,
+                             nim=None,
+                             ndm=None,
+                             oci=None,
+                             cim=None,
+                             allm=False,
+                             nc=None,
+                             hki=None,
+                             oki=None,
+                             sht=None,
+                             obs=None,
+                             obz=None,
+                             nsht=None,
+                             nbs=None,
+                             nbz=None,
+                             pca=None,
+                             v=None):
+    '''
+
+    -c and -ng are not available because they are always used based on the
+    sigma_ref and sigma_list.
+
+    Version 5.1.11
+    Required options:
+    [-inim fitsfile]  : comparison image to be differenced
+    [-tmplim fitsfile]: template image
+    [-outim fitsfile] : output difference image
+
+    Additional options:
+    [-tu tuthresh]    : upper valid data count, template (25000)
+    [-tuk tucthresh]  : upper valid data count for kernel, template (tuthresh)
+    [-tl tlthresh]    : lower valid data count, template (0)
+    [-tg tgain]       : gain in template (1)
+    [-tr trdnoise]    : e- readnoise in template (0)
+    [-tp tpedestal]   : ADU pedestal in template (0)
+    [-tni fitsfile]   : input template noise array (undef)
+    [-tmi fitsfile]   : input template mask image (undef)
+    [-iu iuthresh]    : upper valid data count, image (25000)
+    [-iuk iucthresh]  : upper valid data count for kernel, image (iuthresh)
+    [-il ilthresh]    : lower valid data count, image (0)
+    [-ig igain]       : gain in image (1)
+    [-ir irdnoise]    : e- readnoise in image (0)
+    [-ip ipedestal]   : ADU pedestal in image (0)
+    [-ini fitsfile]   : input image noise array (undef)
+    [-imi fitsfile]   : input image mask image (undef)
+
+    [-ki fitsfile]    : use kernel table in image header (undef)
+    [-r rkernel]      : convolution kernel half width (10)
+    [-kcs step]       : size of step for spatial convolution (2 * rkernel + 1)
+    [-ft fitthresh]   : RMS threshold for good centroid in kernel fit (20.0)
+    [-sft scale]      : scale fitthresh by this fraction if... (0.5)
+    [-nft fraction]   : this fraction of stamps are not filled (0.1)
+    [-vmins spread]    : Fraction of kernel half width to spread input mask (1.0)
+    [-mous spread]    : Ditto output mask, negative = no diffim masking (1.0)
+    [-omi  fitsfile]  : Output bad pixel mask (undef)
+    [-gd xmin xmax ymin ymax]
+                         : only use subsection of full image (full image)
+
+    [-nrx xregion]    : number of image regions in x dimension (1)
+    [-nry yregion]    : number of image regions in y dimension (1)
+       -- OR --
+    [-rf regionfile]  : ascii file with image regions 'xmin:xmax,ymin:ymax'
+       -- OR --
+    [-rkw keyword num]: header 'keyword[0->(num-1)]' indicates valid regions
+
+    [-nsx xstamp]     : number of each region's stamps in x dimension (10)
+    [-nsy ystamp]     : number of each region's stamps in y dimension (10)
+       -- OR --
+    [-ssf stampfile]  : ascii file indicating substamp centers 'x y'
+       -- OR --
+    [-cmp cmpfile]    : .cmp file indicating substamp centers 'x y'
+
+    [-afssc find]     : autofind stamp centers so #=-nss when -ssf,-cmp (1)
+    [-nss substamps]  : number of centroids to use for each stamp (3)
+    [-rss radius]     : half width substamp to extract around each centroid (15)
+
+    [-savexy file]    : save positions of stamps for convolution kernel (undef)
+    [-c  toconvolve]  : force convolution on (t)emplate or (i)mage (undef)
+    [-n  normalize]   : normalize to (t)emplate, (i)mage, or (u)nconvolved (t)
+    [-fom figmerit]   : (v)ariance, (s)igma or (h)istogram convolution merit (v)
+    [-sconv]          : all regions convolved in same direction (0)
+    [-ko kernelorder] : spatial order of kernel variation within region (2)
+    [-bgo bgorder]    : spatial order of background variation within region (1)
+    [-ssig statsig]   : threshold for sigma clipping statistics  (3.0)
+    [-ks badkernelsig]: high sigma rejection for bad stamps in kernel fit (2.0)
+    [-kfm kerfracmask]: fraction of abs(kernel) sum for ok pixel (0.990)
+    [-okn]            : rescale noise for 'ok' pixels (0)
+    [-fi fill]        : value for invalid (bad) pixels (1.0e-30)
+    [-fin fill]       : noise image only fillvalue (0.0e+00)
+    [-convvar]        : convolve variance not noise (0)
+
+    [-oni fitsfile]   : output noise image (undef)
+    [-ond fitsfile]   : output noise scaled difference image (undef)
+    [-nim]            : add noise image as layer to sub image (0)
+    [-ndm]            : add noise-scaled sub image as layer to sub image (0)
+
+    [-oci fitsfile]   : output convolved image (undef)
+    [-cim]            : add convolved image as layer to sub image (0)
+
+    [-allm]           : output all possible image layers
+
+    [-nc]             : do not clobber output image (0)
+    [-hki]            : print extensive kernel info to output image header (0)
+
+    [-oki fitsfile]   : new fitsfile with kernel info (under)
+
+    [-sht]            : output images 16 bitpix int, vs -32 bitpix float (0)
+    [-obs bscale]     : if -sht, output image BSCALE, overrides -inim (1.0)
+    [-obz bzero]      : if -sht, output image BZERO , overrides -inim (0.0)
+    [-nsht]           : output noise image 16 bitpix int, vs -32 bitpix float (0)
+    [-nbs bscale]     : noise image only BSCALE, overrides -obs (1.0)
+    [-nbz bzero]      : noise image only BZERO,  overrides -obz (0.0)
+
+    [-ng  ngauss degree0 sigma0 .. degreeN sigmaN]
+                         : ngauss = number of gaussians which compose kernel (3)
+                         : degree = degree of polynomial associated with gaussian #
+                                    (6 4 2)
+                         : sigma  = width of gaussian #
+                                    (0.70 1.50 3.00)
+                         : N = 0 .. ngauss - 1
+
+                         : (3 6 0.70 4 1.50 2 3.00
+    [-pca nk k0.fits ... n(k-1).fits]
+                         : nk      = number of input basis functions
+                         : k?.fits = name of fitsfile holding basis function
+                         : Since this uses input basis functions, it will fix :
+                         :    hwKernel
+                         :
+    [-v] verbosity    : level of verbosity, 0-2 (1)
+    '''
+    # hotpants is the path is to the binary file
+    if os.path.exists(filename) and (not overwrite):
+        print(filename + ' already exists. Use a different name of set '
+              'overwrite to True if you wish to regenerate a new script.')
+    else:
+        t_sigma = sigma_ref
+        with open(filename, "w+") as out_file:
+            for i, aligned_file_path in enumerate(aligned_file_list):
+                i_sigma = sigma_list[i]
+                if i_sigma < t_sigma:
+                    c = 'i'
+                    ng = None
+                else:
+                    sigma_match = np.sqrt(i_sigma**2. - t_sigma**2.)
+                    c = None
+                    ng = '3 6 ' + str(0.5 * sigma_match) + ' 4 ' + str(
+                        sigma_match) + ' 2 ' + str(2. * sigma_match)
+                out_string = ''
+                out_string += hotpants + ' '
+                out_string += '-inim ' + aligned_file_path + ' '
+                out_string += '-tmplim ' + ref_path + ' '
+                out_string += '-outim ' + aligned_file_path + '_diff '
+                if tu is not None:
+                    out_string += '-tu ' + str(tu) + ' '
+                if tuk is not None:
+                    out_string += '-tuk ' + str(tuk) + ' '
+                if tl is not None:
+                    out_string += '-tl ' + str(tl) + ' '
+                if tg is not None:
+                    out_string += '-tg ' + str(tg) + ' '
+                if tr is not None:
+                    out_string += '-tr ' + str(tr) + ' '
+                if tp is not None:
+                    out_string += '-tp ' + str(tp) + ' '
+                if tni is not None:
+                    out_string += '-tni ' + tni + ' '
+                if tmi is not None:
+                    out_string += '-tmi ' + tmi + ' '
+                if iu is not None:
+                    out_string += '-iu ' + str(tu) + ' '
+                if iuk is not None:
+                    out_string += '-iuk ' + str(tuk) + ' '
+                if il is not None:
+                    out_string += '-il ' + str(tl) + ' '
+                if ig is not None:
+                    out_string += '-ig ' + str(ig) + ' '
+                if ir is not None:
+                    out_string += '-ir ' + str(ir) + ' '
+                if ip is not None:
+                    out_string += '-ip ' + str(ip) + ' '
+                if ini is not None:
+                    out_string += '-ini ' + ini + ' '
+                if imi is not None:
+                    out_string += '-imi ' + imi + ' '
+                if ki is not None:
+                    out_string += '-ki ' + str(ki) + ' '
+                if r is not None:
+                    out_string += '-r ' + str(r) + ' '
+                if kcs is not None:
+                    out_string += '-kcs ' + str(kcs) + ' '
+                if ft is not None:
+                    out_string += '-ft ' + str(ft) + ' '
+                if sft is not None:
+                    out_string += '-sft ' + str(sft) + ' '
+                if nft is not None:
+                    out_string += '-nft ' + str(nft) + ' '
+                if vmins is not None:
+                    out_string += '-vmins ' + str(vmins) + ' '
+                if mous is not None:
+                    out_string += '-mous ' + str(mous) + ' '
+                if omi is not None:
+                    out_string += '-omi ' + omi + ' '
+                if gd is not None:
+                    out_string += '-gd ' + str(gd) + ' '
+                if nrx is not None:
+                    out_string += '-nrx ' + str(nrx) + ' '
+                if nry is not None:
+                    out_string += '-nry ' + str(nry) + ' '
+                if rf is not None:
+                    out_string += '-rf ' + rf + ' '
+                if rkw is not None:
+                    out_string += '-rkw ' + rkw + ' '
+                if nsx is not None:
+                    out_string += '-nsx ' + str(nsx) + ' '
+                if nsy is not None:
+                    out_string += '-nsy ' + str(nsy) + ' '
+                if ssf is not None:
+                    out_string += '-ssf ' + str(ssf) + ' '
+                if cmpfile is not None:
+                    out_string += '-cmp ' + cmpfile + ' '
+                if afssc is not None:
+                    out_string += '-afssc ' + str(afssc) + ' '
+                if nss is not None:
+                    out_string += '-nss ' + str(nss) + ' '
+                if rss is not None:
+                    out_string += '-rss ' + str(rss) + ' '
+                if savexy is not None:
+                    out_string += '-savexy ' + savexy + ' '
+                if c is not None:
+                    out_string += '-c ' + c + ' '
+                if n is not None:
+                    out_string += '-n ' + str(n) + ' '
+                if fom is not None:
+                    out_string += '-fom ' + str(fom) + ' '
+                if sconv is not None:
+                    out_string += '-sconv ' + str(sconv) + ' '
+                if ko is not None:
+                    out_string += '-ko ' + str(ko) + ' '
+                if bgo is not None:
+                    out_string += '-bgo ' + str(bgo) + ' '
+                if ssig is not None:
+                    out_string += '-ssig ' + str(ssig) + ' '
+                if ks is not None:
+                    out_string += '-ks ' + str(ks) + ' '
+                if kfm is not None:
+                    out_string += '-kfm ' + str(kfm) + ' '
+                if okn is not None:
+                    out_string += '-okn ' + str(okn) + ' '
+                if fi is not None:
+                    out_string += '-fi ' + str(fi) + ' '
+                if fin is not None:
+                    out_string += '-fin ' + str(fin) + ' '
+                if convvar is not None:
+                    out_string += '-convvar ' + str(convvar) + ' '
+                if oni is not None:
+                    out_string += '-oni ' + oni + ' '
+                if ond is not None:
+                    out_string += '-ond ' + ond + ' '
+                if nim is not None:
+                    out_string += '-nim ' + str(nim) + ' '
+                if ndm is not None:
+                    out_string += '-ndm ' + str(ndm) + ' '
+                if oci is not None:
+                    out_string += '-oci ' + oci + ' '
+                if cim is not None:
+                    out_string += '-cim ' + str(cim) + ' '
+                if allm:
+                    out_string += '-allm '
+                if nc is not None:
+                    out_string += '-nc ' + str(nc) + ' '
+                if hki is not None:
+                    out_string += '-hki ' + str(hki) + ' '
+                if oki is not None:
+                    out_string += '-oki ' + oki + ' '
+                if sht is not None:
+                    out_string += '-sht ' + str(sht) + ' '
+                if obs is not None:
+                    out_string += '-obs ' + str(obs) + ' '
+                if obz is not None:
+                    out_string += '-obz ' + str(obz) + ' '
+                if nsht is not None:
+                    out_string += '-nsht ' + str(nsht) + ' '
+                if nbs is not None:
+                    out_string += '-nbs ' + str(nbs) + ' '
+                if nbz is not None:
+                    out_string += '-nbz ' + str(nbz) + ' '
+                if ng is not None:
+                    out_string += '-ng ' + ng + ' '
+                if pca is not None:
+                    out_string += '-pca ' + pca + ' '
+                if v is not None:
+                    out_string += '-v ' + str(v) + ' '
+                out_string = out_string[:-1] + '\n'
+                out_file.write(out_string)
+        os.chmod(filename, 0o755)
+
+
+def run_hotpants(filename):
+    subprocess.call(filename, shell=True)
