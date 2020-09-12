@@ -524,7 +524,7 @@ def get_all_fwhm(file_list,
                  epsf_oversampling=4,
                  epsf_smoothing_kernel='quartic',
                  epsf_recentering_maxiters=20,
-                 epsf_maxiters=10,
+                 epsf_maxiters=20,
                  epsf_progress_bar=True,
                  epsf_norm_radius=5.5,
                  epsf_shift_val=0.5,
@@ -589,7 +589,9 @@ def generate_hotpants_script(ref_path,
                              aligned_file_list,
                              sigma_ref,
                              sigma_list,
+                             shell='/bin/bash',
                              hotpants='hotpants',
+                             extension='fits',
                              filename='diff_image.sh',
                              overwrite=True,
                              tu=None,
@@ -790,11 +792,11 @@ def generate_hotpants_script(ref_path,
                     c = None
                     ng = '3 6 ' + str(0.5 * sigma_match) + ' 4 ' + str(
                         sigma_match) + ' 2 ' + str(2. * sigma_match)
-                out_string = ''
+                out_string = shell + ' -i -c \''
                 out_string += hotpants + ' '
                 out_string += '-inim ' + aligned_file_path + ' '
                 out_string += '-tmplim ' + ref_path + ' '
-                out_string += '-outim ' + aligned_file_path + '_diff '
+                out_string += '-outim ' + aligned_file_path.split('.' + extension)[0] + '_diff.' + extension + ' '
                 if tu is not None:
                     out_string += '-tu ' + str(tu) + ' '
                 if tuk is not None:
@@ -935,10 +937,12 @@ def generate_hotpants_script(ref_path,
                     out_string += '-pca ' + pca + ' '
                 if v is not None:
                     out_string += '-v ' + str(v) + ' '
-                out_string = out_string[:-1] + '\n'
+                out_string = out_string[:-1] + '\'\n'
                 out_file.write(out_string)
         os.chmod(filename, 0o755)
 
 
 def run_hotpants(filename):
-    subprocess.call(filename, shell=True)
+    logfile = open(filename.split('.')[0] + '.log', 'w+')
+    subprocess.Popen(filename, stdout=logfile, shell=True)
+
