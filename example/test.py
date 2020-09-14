@@ -63,7 +63,7 @@ ax3.imshow(np.log10(bkg.background))
 ax4.imshow(data_stacked_bkg_sub, norm=norm, origin='lower')
 
 # Get the star stamps to build psf
-stars, stars_tbl = get_stars(data_stacked_bkg_sub, threshold=500., size=25)
+stars, stars_tbl = get_good_stars(data_stacked_bkg_sub, threshold=500., size=25)
 
 # build the psf using the stacked image
 # see also https://photutils.readthedocs.io/en/stable/epsf.html
@@ -108,26 +108,21 @@ sigma_x, sigma_y = get_all_fwhm(aligned_file_list,
                                 epsf_shift_val=0.01,
                                 epsf_recentering_boxsize=(5, 5),
                                 epsf_center_accuracy=0.001,
-                                show_stamps=True,
+                                show_stamps=False,
                                 stamps_nrows=3,
                                 stamps_ncols=4,
                                 figsize=(10, 10))
 
-# Use the FWHM to find stars
-# see also https://photutils.readthedocs.io/en/stable/detection.html
-
-# Use the psf and stars to perform photometry on the stacked image
-# see also https://photutils.readthedocs.io/en/latest/psf.html
-
 # Use the FWHM to generate script for hotpants
 # see also https://github.com/acbecker/hotpants
 sigma_ref = np.sqrt(sigma_x_stack**2. + sigma_y_stack**2.)
-sigma_list = np.sqrt(np.array(sigma_x)**2. + np.array(sigma_y)**2.)
-generate_hotpants_script(os.path.join(output_path, 'stacked.fits'),
+sigma_list = np.sqrt(sigma_x**2. + sigma_y**2.)
+diff_image_script = generate_hotpants_script(os.path.join(output_path, 'stacked.fits'),
                          aligned_file_list,
                          sigma_ref,
                          sigma_list,
                          hotpants='hotpants',
+                         write_to_file=True,
                          filename=os.path.join(output_path, 'diff_image.sh'),
                          overwrite=True,
                          tu=50000,
@@ -138,10 +133,18 @@ generate_hotpants_script(os.path.join(output_path, 'stacked.fits'),
                          ir=12.
                          )
 # run hotpants
-run_hotpants(os.path.join(output_path, 'diff_image.sh'))
+diff_image_list = run_hotpants(diff_image_script)
 
-# get residual flux from hotpants
+# Use the FWHM to find the stars in the stacked image
+# see also https://photutils.readthedocs.io/en/stable/detection.html
+source_list = find_star(data_stacked_bkg_sub, fwhm=sigma_x_stack*2.355, n_threshold=5., show=True)
 
-# match the Photutils and the difference image photometry from hotpants
+# Use the psf and stars to perform photometry on the stacked image
+# see also https://photutils.readthedocs.io/en/latest/psf.html
+photometry_list = do_photometry(diff_image_list, source_list, sigma_list)
 
 # plot lightcurves
+flux, flux_err, flux_fit = plot_lightcurve(photometry_list)
+
+
+

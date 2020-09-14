@@ -10,13 +10,16 @@ import photutils
 from astropy import units as u
 from astropy.convolution import convolve_fft as convolve
 from astropy.io import fits
-from astropy.stats import SigmaClip
+from astropy.stats import SigmaClip, sigma_clipped_stats
+from astropy.modeling.fitting import LevMarLSQFitter
 from astropy.nddata import CCDData, NDData
 from astropy.table import Table
 from astropy.visualization import simple_norm
 from matplotlib import pyplot as plt
-from photutils.psf import extract_stars
+from photutils.background import MMMBackground, MADStdBackgroundRMS
+from photutils.psf import extract_stars, IntegratedGaussianPRF, DAOGroup
 from scipy.optimize import curve_fit
+
 
 
 def generate_file_list(input_path, output_path, filetype='fits'):
@@ -397,7 +400,7 @@ def get_background(data, box_size=(50, 50), filter_size=(3, 3), sigma=3.):
     return bkg
 
 
-def get_stars(data, stars_tbl=None, threshold=100., size=25):
+def get_good_stars(data, stars_tbl=None, threshold=100., size=25):
     if stars_tbl is None:
         # detect peaks
         peaks_tbl = photutils.find_peaks(data, threshold=threshold)
@@ -542,10 +545,10 @@ def get_all_fwhm(file_list,
                                box_size=bkg_box_size,
                                filter_size=bkg_filter_size,
                                sigma=bkg_sigma)
-        stars_i, _ = get_stars(data_i - bkg_i.background,
-                               stars_tbl=stars_tbl,
-                               threshold=stars_threshold,
-                               size=stars_size)
+        stars_i, _ = get_good_stars(data_i - bkg_i.background,
+                                    stars_tbl=stars_tbl,
+                                    threshold=stars_threshold,
+                                    size=stars_size)
         # build the psf using the stacked image
         # see also https://photutils.readthedocs.io/en/stable/epsf.html
         epsf_i, _ = build_psf(
@@ -570,28 +573,19 @@ def get_all_fwhm(file_list,
             sigma_x.append(sigma[0])
             sigma_y.append(sigma[1])
 
+    sigma_x = np.array(sigma_x)
+    sigma_y = np.array(sigma_y)
+
     return sigma_x, sigma_y
-
-
-def find_star():
-    # see also https://photutils.readthedocs.io/en/stable/detection.html
-    photutils.DAOStarFinder()
-    # photutils.IRAFStarFinder()
-    pass
-
-
-def do_photometry():
-    # see also https://photutils.readthedocs.io/en/latest/psf.html
-    pass
 
 
 def generate_hotpants_script(ref_path,
                              aligned_file_list,
                              sigma_ref,
                              sigma_list,
-                             shell='/bin/bash',
                              hotpants='hotpants',
                              extension='fits',
+                             write_to_file=True,
                              filename='diff_image.sh',
                              overwrite=True,
                              tu=None,
@@ -781,168 +775,296 @@ def generate_hotpants_script(ref_path,
               'overwrite to True if you wish to regenerate a new script.')
     else:
         t_sigma = sigma_ref
-        with open(filename, "w+") as out_file:
-            for i, aligned_file_path in enumerate(aligned_file_list):
-                i_sigma = sigma_list[i]
-                if i_sigma < t_sigma:
-                    c = 'i'
-                    ng = None
-                else:
-                    sigma_match = np.sqrt(i_sigma**2. - t_sigma**2.)
-                    c = None
-                    ng = '3 6 ' + str(0.5 * sigma_match) + ' 4 ' + str(
-                        sigma_match) + ' 2 ' + str(2. * sigma_match)
-                out_string = shell + ' -i -c \''
-                out_string += hotpants + ' '
-                out_string += '-inim ' + aligned_file_path + ' '
-                out_string += '-tmplim ' + ref_path + ' '
-                out_string += '-outim ' + aligned_file_path.split('.' + extension)[0] + '_diff.' + extension + ' '
-                if tu is not None:
-                    out_string += '-tu ' + str(tu) + ' '
-                if tuk is not None:
-                    out_string += '-tuk ' + str(tuk) + ' '
-                if tl is not None:
-                    out_string += '-tl ' + str(tl) + ' '
-                if tg is not None:
-                    out_string += '-tg ' + str(tg) + ' '
-                if tr is not None:
-                    out_string += '-tr ' + str(tr) + ' '
-                if tp is not None:
-                    out_string += '-tp ' + str(tp) + ' '
-                if tni is not None:
-                    out_string += '-tni ' + tni + ' '
-                if tmi is not None:
-                    out_string += '-tmi ' + tmi + ' '
-                if iu is not None:
-                    out_string += '-iu ' + str(tu) + ' '
-                if iuk is not None:
-                    out_string += '-iuk ' + str(tuk) + ' '
-                if il is not None:
-                    out_string += '-il ' + str(tl) + ' '
-                if ig is not None:
-                    out_string += '-ig ' + str(ig) + ' '
-                if ir is not None:
-                    out_string += '-ir ' + str(ir) + ' '
-                if ip is not None:
-                    out_string += '-ip ' + str(ip) + ' '
-                if ini is not None:
-                    out_string += '-ini ' + ini + ' '
-                if imi is not None:
-                    out_string += '-imi ' + imi + ' '
-                if ki is not None:
-                    out_string += '-ki ' + str(ki) + ' '
-                if r is not None:
-                    out_string += '-r ' + str(r) + ' '
-                if kcs is not None:
-                    out_string += '-kcs ' + str(kcs) + ' '
-                if ft is not None:
-                    out_string += '-ft ' + str(ft) + ' '
-                if sft is not None:
-                    out_string += '-sft ' + str(sft) + ' '
-                if nft is not None:
-                    out_string += '-nft ' + str(nft) + ' '
-                if vmins is not None:
-                    out_string += '-vmins ' + str(vmins) + ' '
-                if mous is not None:
-                    out_string += '-mous ' + str(mous) + ' '
-                if omi is not None:
-                    out_string += '-omi ' + omi + ' '
-                if gd is not None:
-                    out_string += '-gd ' + str(gd) + ' '
-                if nrx is not None:
-                    out_string += '-nrx ' + str(nrx) + ' '
-                if nry is not None:
-                    out_string += '-nry ' + str(nry) + ' '
-                if rf is not None:
-                    out_string += '-rf ' + rf + ' '
-                if rkw is not None:
-                    out_string += '-rkw ' + rkw + ' '
-                if nsx is not None:
-                    out_string += '-nsx ' + str(nsx) + ' '
-                if nsy is not None:
-                    out_string += '-nsy ' + str(nsy) + ' '
-                if ssf is not None:
-                    out_string += '-ssf ' + str(ssf) + ' '
-                if cmpfile is not None:
-                    out_string += '-cmp ' + cmpfile + ' '
-                if afssc is not None:
-                    out_string += '-afssc ' + str(afssc) + ' '
-                if nss is not None:
-                    out_string += '-nss ' + str(nss) + ' '
-                if rss is not None:
-                    out_string += '-rss ' + str(rss) + ' '
-                if savexy is not None:
-                    out_string += '-savexy ' + savexy + ' '
-                if c is not None:
-                    out_string += '-c ' + c + ' '
-                if n is not None:
-                    out_string += '-n ' + str(n) + ' '
-                if fom is not None:
-                    out_string += '-fom ' + str(fom) + ' '
-                if sconv is not None:
-                    out_string += '-sconv ' + str(sconv) + ' '
-                if ko is not None:
-                    out_string += '-ko ' + str(ko) + ' '
-                if bgo is not None:
-                    out_string += '-bgo ' + str(bgo) + ' '
-                if ssig is not None:
-                    out_string += '-ssig ' + str(ssig) + ' '
-                if ks is not None:
-                    out_string += '-ks ' + str(ks) + ' '
-                if kfm is not None:
-                    out_string += '-kfm ' + str(kfm) + ' '
-                if okn is not None:
-                    out_string += '-okn ' + str(okn) + ' '
-                if fi is not None:
-                    out_string += '-fi ' + str(fi) + ' '
-                if fin is not None:
-                    out_string += '-fin ' + str(fin) + ' '
-                if convvar is not None:
-                    out_string += '-convvar ' + str(convvar) + ' '
-                if oni is not None:
-                    out_string += '-oni ' + oni + ' '
-                if ond is not None:
-                    out_string += '-ond ' + ond + ' '
-                if nim is not None:
-                    out_string += '-nim ' + str(nim) + ' '
-                if ndm is not None:
-                    out_string += '-ndm ' + str(ndm) + ' '
-                if oci is not None:
-                    out_string += '-oci ' + oci + ' '
-                if cim is not None:
-                    out_string += '-cim ' + str(cim) + ' '
-                if allm:
-                    out_string += '-allm '
-                if nc is not None:
-                    out_string += '-nc ' + str(nc) + ' '
-                if hki is not None:
-                    out_string += '-hki ' + str(hki) + ' '
-                if oki is not None:
-                    out_string += '-oki ' + oki + ' '
-                if sht is not None:
-                    out_string += '-sht ' + str(sht) + ' '
-                if obs is not None:
-                    out_string += '-obs ' + str(obs) + ' '
-                if obz is not None:
-                    out_string += '-obz ' + str(obz) + ' '
-                if nsht is not None:
-                    out_string += '-nsht ' + str(nsht) + ' '
-                if nbs is not None:
-                    out_string += '-nbs ' + str(nbs) + ' '
-                if nbz is not None:
-                    out_string += '-nbz ' + str(nbz) + ' '
-                if ng is not None:
-                    out_string += '-ng ' + ng + ' '
-                if pca is not None:
-                    out_string += '-pca ' + pca + ' '
-                if v is not None:
-                    out_string += '-v ' + str(v) + ' '
-                out_string = out_string[:-1] + '\'\n'
-                out_file.write(out_string)
-        os.chmod(filename, 0o755)
+        output = []
+        for i, aligned_file_path in enumerate(aligned_file_list):
+            i_sigma = sigma_list[i]
+            if i_sigma < t_sigma:
+                c = 'i'
+                ng = None
+            else:
+                sigma_match = np.sqrt(i_sigma**2. - t_sigma**2.)
+                c = None
+                ng = '3 6 ' + str(0.5 * sigma_match) + ' 4 ' + str(
+                    sigma_match) + ' 2 ' + str(2. * sigma_match)
+            out_string = hotpants + ' '
+            out_string += '-inim ' + aligned_file_path + ' '
+            out_string += '-tmplim ' + ref_path + ' '
+            out_string += '-outim ' + aligned_file_path.split(
+                '.' + extension)[0] + '_diff.' + extension + ' '
+            if tu is not None:
+                out_string += '-tu ' + str(tu) + ' '
+            if tuk is not None:
+                out_string += '-tuk ' + str(tuk) + ' '
+            if tl is not None:
+                out_string += '-tl ' + str(tl) + ' '
+            if tg is not None:
+                out_string += '-tg ' + str(tg) + ' '
+            if tr is not None:
+                out_string += '-tr ' + str(tr) + ' '
+            if tp is not None:
+                out_string += '-tp ' + str(tp) + ' '
+            if tni is not None:
+                out_string += '-tni ' + tni + ' '
+            if tmi is not None:
+                out_string += '-tmi ' + tmi + ' '
+            if iu is not None:
+                out_string += '-iu ' + str(tu) + ' '
+            if iuk is not None:
+                out_string += '-iuk ' + str(tuk) + ' '
+            if il is not None:
+                out_string += '-il ' + str(tl) + ' '
+            if ig is not None:
+                out_string += '-ig ' + str(ig) + ' '
+            if ir is not None:
+                out_string += '-ir ' + str(ir) + ' '
+            if ip is not None:
+                out_string += '-ip ' + str(ip) + ' '
+            if ini is not None:
+                out_string += '-ini ' + ini + ' '
+            if imi is not None:
+                out_string += '-imi ' + imi + ' '
+            if ki is not None:
+                out_string += '-ki ' + str(ki) + ' '
+            if r is not None:
+                out_string += '-r ' + str(r) + ' '
+            if kcs is not None:
+                out_string += '-kcs ' + str(kcs) + ' '
+            if ft is not None:
+                out_string += '-ft ' + str(ft) + ' '
+            if sft is not None:
+                out_string += '-sft ' + str(sft) + ' '
+            if nft is not None:
+                out_string += '-nft ' + str(nft) + ' '
+            if vmins is not None:
+                out_string += '-vmins ' + str(vmins) + ' '
+            if mous is not None:
+                out_string += '-mous ' + str(mous) + ' '
+            if omi is not None:
+                out_string += '-omi ' + omi + ' '
+            if gd is not None:
+                out_string += '-gd ' + str(gd) + ' '
+            if nrx is not None:
+                out_string += '-nrx ' + str(nrx) + ' '
+            if nry is not None:
+                out_string += '-nry ' + str(nry) + ' '
+            if rf is not None:
+                out_string += '-rf ' + rf + ' '
+            if rkw is not None:
+                out_string += '-rkw ' + rkw + ' '
+            if nsx is not None:
+                out_string += '-nsx ' + str(nsx) + ' '
+            if nsy is not None:
+                out_string += '-nsy ' + str(nsy) + ' '
+            if ssf is not None:
+                out_string += '-ssf ' + str(ssf) + ' '
+            if cmpfile is not None:
+                out_string += '-cmp ' + cmpfile + ' '
+            if afssc is not None:
+                out_string += '-afssc ' + str(afssc) + ' '
+            if nss is not None:
+                out_string += '-nss ' + str(nss) + ' '
+            if rss is not None:
+                out_string += '-rss ' + str(rss) + ' '
+            if savexy is not None:
+                out_string += '-savexy ' + savexy + ' '
+            if c is not None:
+                out_string += '-c ' + c + ' '
+            if n is not None:
+                out_string += '-n ' + str(n) + ' '
+            if fom is not None:
+                out_string += '-fom ' + str(fom) + ' '
+            if sconv is not None:
+                out_string += '-sconv ' + str(sconv) + ' '
+            if ko is not None:
+                out_string += '-ko ' + str(ko) + ' '
+            if bgo is not None:
+                out_string += '-bgo ' + str(bgo) + ' '
+            if ssig is not None:
+                out_string += '-ssig ' + str(ssig) + ' '
+            if ks is not None:
+                out_string += '-ks ' + str(ks) + ' '
+            if kfm is not None:
+                out_string += '-kfm ' + str(kfm) + ' '
+            if okn is not None:
+                out_string += '-okn ' + str(okn) + ' '
+            if fi is not None:
+                out_string += '-fi ' + str(fi) + ' '
+            if fin is not None:
+                out_string += '-fin ' + str(fin) + ' '
+            if convvar is not None:
+                out_string += '-convvar ' + str(convvar) + ' '
+            if oni is not None:
+                out_string += '-oni ' + oni + ' '
+            if ond is not None:
+                out_string += '-ond ' + ond + ' '
+            if nim is not None:
+                out_string += '-nim ' + str(nim) + ' '
+            if ndm is not None:
+                out_string += '-ndm ' + str(ndm) + ' '
+            if oci is not None:
+                out_string += '-oci ' + oci + ' '
+            if cim is not None:
+                out_string += '-cim ' + str(cim) + ' '
+            if allm:
+                out_string += '-allm '
+            if nc is not None:
+                out_string += '-nc ' + str(nc) + ' '
+            if hki is not None:
+                out_string += '-hki ' + str(hki) + ' '
+            if oki is not None:
+                out_string += '-oki ' + oki + ' '
+            if sht is not None:
+                out_string += '-sht ' + str(sht) + ' '
+            if obs is not None:
+                out_string += '-obs ' + str(obs) + ' '
+            if obz is not None:
+                out_string += '-obz ' + str(obz) + ' '
+            if nsht is not None:
+                out_string += '-nsht ' + str(nsht) + ' '
+            if nbs is not None:
+                out_string += '-nbs ' + str(nbs) + ' '
+            if nbz is not None:
+                out_string += '-nbz ' + str(nbz) + ' '
+            if ng is not None:
+                out_string += '-ng ' + ng + ' '
+            if pca is not None:
+                out_string += '-pca ' + pca + ' '
+            if v is not None:
+                out_string += '-v ' + str(v) + ' '
+            out_string = out_string[:-1]
+            output.append(out_string)
+
+        if write_to_file:
+            with open(filename, "w+") as out_file:
+                for i in output:
+                    out_file.write(i + '\n')
+
+            os.chmod(filename, 0o755)
+
+        return output
 
 
-def run_hotpants(filename):
-    logfile = open(filename.split('.')[0] + '.log', 'w+')
-    subprocess.Popen(filename, stdout=logfile, shell=True)
+def run_hotpants(output, shell='zsh'):
+    with open('diff_image.log', 'w+') as out_file:
+        for i in output:
+            subprocess.run(i, stdout=out_file, shell=True, executable=shell)
+    diff_image_list = []
+    with open('diff_file_list.txt', 'w+') as out_file:
+        for i in output:
+            filepath = i.split(' ')[2].split('.')[0] + '_diff.fits'
+            out_file.write(filepath + '\n')
+            diff_image_list.append(filepath)
+    return diff_image_list
+
+
+def find_star(data,
+              sigma_clip=3.0,
+              finder='dao',
+              fwhm=3.,
+              minsep_fwhm=0.01,
+              roundhi=5.0,
+              roundlo=-5.0,
+              sharplo=0.0,
+              sharphi=2.0,
+              n_threshold=5.,
+              show=False,
+              *args):
+    # Note that the get_good_stars() function only pick the best stars for
+    # compting the FWHM, this function is for the actual star finding
+    #
+    # see also https://photutils.readthedocs.io/en/stable/detection.html
+    #
+    # data should be sky-subtracted
+    mean, median, std = sigma_clipped_stats(data, sigma=sigma_clip)
+    if finder == 'dao':
+        star_finder = photutils.DAOStarFinder(fwhm=fwhm,
+                                              threshold=n_threshold * std,
+                                              *args)
+    elif finder == 'iraf':
+        star_finder = photutils.IRAFStarFinder(fwhm=fwhm,
+                                               threshold=n_threshold * std,
+                                               *args)
+    else:
+        raise Error('Unknown finder. Please choose from dao and iraf.')
+    sources_list = star_finder(data)
+    for col in sources_list.colnames:
+        sources_list[col].info.format = '%.10g'
+    if show:
+        positions = np.transpose((sources_list['xcentroid'], sources_list['ycentroid']))
+        apertures = photutils.CircularAperture(positions, r=5.)
+        norm = simple_norm(data, 'log', percent=99.9)
+        plt.figure(figsize=(8, 8))
+        plt.imshow(data, cmap='binary', origin='lower', norm=norm)
+        apertures.plot(color='#0547f9', lw=1.5)
+        plt.xlim(0, data.shape[1] - 1)
+        plt.ylim(0, data.shape[0] - 1)
+        plt.xlabel('x / pixel')
+        plt.ylabel('y / pixel')
+        plt.tight_layout()
+        plt.grid(color='greenyellow', ls=':', lw=0.5)
+    return sources_list
+
+
+def do_photometry(diff_image_list, source_list, sigma_list):
+    # see also https://photutils.readthedocs.io/en/latest/psf.html
+    result_tab = []
+    MJD = []
+    mmm_bkg = MMMBackground()
+    fitter = LevMarLSQFitter()
+    pos = Table(names=['x_0', 'y_0'], data=[source_list['xcentroid'],
+                                            source_list['ycentroid']])
+    for i, diff_image_path in enumerate(diff_image_list):
+        fitsfile = fits.open(diff_image_path)[0]
+        image = fitsfile.data
+        MJD = float(fitsfile.header['MJD'])
+        sigma_i = sigma_list[i]
+        fwhm_i = sigma_i * 2.355
+        daogroup = DAOGroup(fwhm_i)
+        psf_model = IntegratedGaussianPRF(sigma=sigma_i)
+        psf_model.x_0.fixed = True
+        psf_model.y_0.fixed = True
+        photometry = photutils.BasicPSFPhotometry(group_maker=daogroup,
+                                    bkg_estimator=mmm_bkg,
+                                    psf_model=psf_model,
+                                    fitter=LevMarLSQFitter(),
+                                    fitshape=(11,11))
+        result_tab.append(photometry(image=image, init_guesses=pos))
+        result_tab[i]['mjd'] = np.ones(len(result_tab[i])) * MJD
+    #residual_image = photometry.get_residual_image()
+    return result_tab
+
+
+def plot_lightcurve(photometry_list, source_id=None, return_flux=True):
+    flux = []
+    flux_err = []
+    flux_fit = []
+    mjd = []
+    if source_id is None:
+        source_id = np.arange(len(photometry_list)).astype('int') + 1
+    plt.figure(figsize=(8, 8))
+    for i, id_i in enumerate(source_id):
+        flux_i = []
+        flux_err_i = []
+        flux_fit_i =[]
+        mjd_i = []
+        for list_i in photometry_list:
+            mask = (list_i['id'] == id_i)
+            flux_i.append(list_i[mask]['flux_0'].data[0])
+            flux_err_i.append(list_i[mask]['flux_unc'].data[0])
+            flux_fit_i.append(list_i[mask]['flux_fit'].data[0])
+            mjd_i.append(list_i[mask]['mjd'].data[0])
+        flux_i = np.array(flux_i)
+        flux_fit_i = np.array(flux_fit_i)
+        flux_err_i = np.array(flux_err_i)
+        flux.append(flux_i)
+        flux_fit.append(flux_fit_i)
+        flux_err.append(flux_err_i)
+        mjd.append(np.array(mjd))
+        print(flux_i)
+        print(flux_err_i)
+        plt.errorbar(mjd_i, flux_i, yerr=[flux_err_i, flux_err_i], fmt='o', markersize=5)
+    plt.xlabel('MJD')
+    plt.ylabel('Flux / Count')
+    plt.tight_layout()
+    return flux, flux_err, flux_fit
 
