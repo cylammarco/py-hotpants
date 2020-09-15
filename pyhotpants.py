@@ -21,7 +21,6 @@ from photutils.psf import extract_stars, IntegratedGaussianPRF, DAOGroup
 from scipy.optimize import curve_fit
 
 
-
 def generate_file_list(input_path, output_path, filetype='fits'):
     file_list = glob.glob(os.path.join(input_path, "*." + filetype))
     np.savetxt(os.path.join(output_path, 'file_list.txt'), file_list, fmt='%s')
@@ -297,20 +296,22 @@ def cross_correlation_shifts(image1,
         return xshift, yshift
 
 
-def align_images(ref,
-                 file_list,
+def align_images(file_list,
                  output_path,
                  overwrite,
+                 ccddata_unit=u.ct,
+                 ref=None,
                  xl=0,
                  xr=0,
                  yb=0,
                  yt=0,
-                 stack=False,
-                 stack_sigma_clip_low=2,
-                 stack_sigma_clip_high=5,
-                 stack_sigma_clip_func=np.ma.median,
-                 stack_clip_extrema_low=1,
-                 stack_clip_extrema_high=1):
+                 return_combiner=False,
+                 combiner_dtype=None,
+                 sigma_clip_low=1,
+                 sigma_clip_high=1,
+                 sigma_clip_func=np.ma.mean,
+                 clip_extrema_low_percentile=15.9,
+                 clip_extrema_high_percentile=15.9):
     '''
     Parameters
     ----------
@@ -329,12 +330,14 @@ def align_images(ref,
     '''
 
     # open the reference image
+    if ref is None:
+        ref = file_list[0]
     f_ref = fits.open(ref)[-1]
     header_ref = f_ref.header
     image_ref = f_ref.data
     aligned_file_list = []
 
-    if stack:
+    if return_combiner:
         combiner_list = []
 
     for i, f_to_align in enumerate(file_list):
@@ -357,8 +360,9 @@ def align_images(ref,
                                           header['NAXIS1']].astype('float32')
 
         # append to the combiner if stacking
-        if stack:
-            combiner_list.append(CCDData(image_aligned_to_ref, unit=u.ct))
+        if return_combiner:
+            combiner_list.append(
+                CCDData(image_aligned_to_ref, unit=ccddata_unit))
 
         # Set output file name and save as fit
         outfile_name = f_to_align.split('.')[0] + '_aligned.fits'
@@ -374,13 +378,15 @@ def align_images(ref,
                fmt='%s')
 
     # return the file list for the aligned images, and the combiner if stacking
-    if stack:
-        combiner = ccdproc.Combiner(combiner_list)
-        combiner.sigma_clipping(low_thresh=stack_sigma_clip_low,
-                                high_thresh=stack_sigma_clip_high,
-                                func=stack_sigma_clip_func)
-        combiner.clip_extrema(nlow=stack_clip_extrema_low,
-                              nhigh=stack_clip_extrema_high)
+    if return_combiner:
+        combiner = ccdproc.Combiner(combiner_list, dtype=combiner_dtype)
+        combiner.sigma_clipping(low_thresh=sigma_clip_low,
+                                high_thresh=sigma_clip_high,
+                                func=sigma_clip_func)
+        combiner.clip_extrema(nlow=int(clip_extrema_low_percentile / 100. *
+                                       len(combiner_list)),
+                              nhigh=int(clip_extrema_high_percentile / 100. *
+                                        len(combiner_list)))
 
         return aligned_file_list, combiner
 
@@ -389,62 +395,88 @@ def align_images(ref,
         return aligned_file_list
 
 
-def get_background(data, box_size=(50, 50), filter_size=(3, 3), sigma=3.):
-    sigma_clip = SigmaClip(sigma=sigma)
-    bkg_estimator = photutils.MedianBackground()
+def get_background(data,
+                   box_size=25,
+                   sigma=3.,
+                   sigma_lower=None,
+                   sigma_upper=None,
+                   maxiters=5,
+                   cenfunc='median',
+                   stdfunc='std',
+                   bkg_estimator=photutils.MedianBackground(),
+                   **args):
+    sigma_clip = SigmaClip(sigma=sigma,
+                           sigma_lower=sigma_lower,
+                           sigma_upper=sigma_upper,
+                           maxiters=maxiters,
+                           cenfunc=cenfunc,
+                           stdfunc=stdfunc)
     bkg = photutils.Background2D(data,
-                                 box_size=box_size,
-                                 filter_size=filter_size,
+                                 box_size,
                                  sigma_clip=sigma_clip,
-                                 bkg_estimator=bkg_estimator)
+                                 bkg_estimator=bkg_estimator,
+                                 **args)
     return bkg
 
 
-def get_good_stars(data, stars_tbl=None, threshold=100., size=25):
+def get_good_stars(data,
+                   threshold,
+                   box_size=3,
+                   footprint=None,
+                   mask=None,
+                   border_width=None,
+                   npeaks=np.inf,
+                   centroid_func=None,
+                   subpixel=False,
+                   error=None,
+                   wcs=None,
+                   stars_tbl=None,
+                   size=25,
+                   **args):
     if stars_tbl is None:
         # detect peaks
-        peaks_tbl = photutils.find_peaks(data, threshold=threshold)
+        peaks_tbl = photutils.find_peaks(data,
+                                         threshold,
+                                         box_size=box_size,
+                                         footprint=footprint,
+                                         mask=mask,
+                                         border_width=border_width,
+                                         npeaks=npeaks,
+                                         centroid_func=centroid_func,
+                                         subpixel=subpixel,
+                                         error=error,
+                                         wcs=wcs)
         peaks_sort_mask = np.argsort(-peaks_tbl['peak_value'])
-
         # remove sources near the edge
         hsize = (size - 1) // 2
         x = peaks_tbl['x_peak'][peaks_sort_mask]
         y = peaks_tbl['y_peak'][peaks_sort_mask]
         mask = ((x > hsize) & (x < (data.shape[1] - 1 - hsize)) & (y > hsize) &
                 (y < (data.shape[0] - 1 - hsize)))
-
         stars_tbl = Table()
         stars_tbl['x'] = x[mask]
         stars_tbl['y'] = y[mask]
-
-    nddata = NDData(data=data)
-    stars = extract_stars(nddata, stars_tbl, size=size)
-
+    nddata = NDData(data=data, **args)
+    stars = extract_stars(nddata, catalogs=stars_tbl, size=size)
     return stars, stars_tbl
 
 
 def build_psf(stars,
-              epsf_oversampling=4,
-              epsf_smoothing_kernel='quartic',
-              epsf_recentering_maxiters=20,
-              epsf_maxiters=10,
-              epsf_progress_bar=True,
-              epsf_norm_radius=5.5,
-              epsf_shift_val=0.5,
-              epsf_recentering_boxsize=(5, 5),
-              epsf_center_accuracy=0.001,
+              oversampling=4,
+              smoothing_kernel='quartic',
+              maxiters=10,
               show_stamps=False,
               stamps_nrows=5,
               stamps_ncols=5,
-              figsize=(10, 10)):
+              figsize=(10, 10),
+              **args):
     '''
     data is best background subtracted
     '''
-    epsf_builder = photutils.EPSFBuilder(
-        oversampling=epsf_oversampling,
-        recentering_maxiters=epsf_recentering_maxiters,
-        maxiters=epsf_maxiters,
-        progress_bar=epsf_progress_bar)
+    epsf_builder = photutils.EPSFBuilder(oversampling=oversampling,
+                                         smoothing_kernel=smoothing_kernel,
+                                         maxiters=maxiters,
+                                         **args)
     epsf, fitted_stars = epsf_builder(stars)
 
     if show_stamps:
@@ -491,7 +523,7 @@ def _gaus(x, a, b, x0, sigma):
     return a * np.exp(-(x - x0)**2 / (2 * sigma**2)) + b
 
 
-def fit_gaussian_for_fwhm(psf, sigma=False):
+def fit_gaussian_for_fwhm(psf, fit_sigma=False):
     '''
     Fit gaussians to the psf
     Patameters
@@ -510,7 +542,7 @@ def fit_gaussian_for_fwhm(psf, sigma=False):
     popt_y, _ = curve_fit(_gaus, np.arange(len(psf_y)), psf_y, p0=pguess_y)
     sigma_x = popt_x[3]
     sigma_y = popt_y[3]
-    if sigma:
+    if fit_sigma:
         return sigma_x, sigma_y
     else:
         return sigma_x * 2.355, sigma_y * 2.355
@@ -518,64 +550,65 @@ def fit_gaussian_for_fwhm(psf, sigma=False):
 
 def get_all_fwhm(file_list,
                  stars_tbl,
-                 sigma=False,
-                 bkg_box_size=(50, 50),
-                 bkg_filter_size=(5, 5),
-                 bkg_sigma=3.,
-                 stars_threshold=500.,
-                 stars_size=25,
-                 epsf_oversampling=4,
-                 epsf_smoothing_kernel='quartic',
-                 epsf_recentering_maxiters=20,
-                 epsf_maxiters=20,
-                 epsf_progress_bar=True,
-                 epsf_norm_radius=5.5,
-                 epsf_shift_val=0.5,
-                 epsf_recentering_boxsize=(5, 5),
-                 epsf_center_accuracy=0.001,
-                 show_stamps=False,
-                 stamps_nrows=5,
-                 stamps_ncols=5,
-                 figsize=(10, 10)):
+                 fit_sigma=False,
+                 sigma=3.,
+                 sigma_lower=None,
+                 sigma_upper=None,
+                 maxiters=5,
+                 oversampling=4.,
+                 bkg_estimator=photutils.MedianBackground(),
+                 cenfunc='median',
+                 stdfunc='std',
+                 threshold=500.,
+                 box_size=3,
+                 footprint=None,
+                 mask=None,
+                 border_width=None,
+                 npeaks=np.inf,
+                 centroid_func=None,
+                 subpixel=False,
+                 error=None,
+                 wcs=None,
+                 size=25,
+                 **args):
     sigma_x = []
     sigma_y = []
     for filepath in file_list:
         data_i = fits.open(filepath)[0].data
         bkg_i = get_background(data_i,
-                               box_size=bkg_box_size,
-                               filter_size=bkg_filter_size,
-                               sigma=bkg_sigma)
+                               sigma=sigma,
+                               sigma_lower=sigma_lower,
+                               sigma_upper=sigma_upper,
+                               maxiters=maxiters,
+                               bkg_estimator=bkg_estimator,
+                               cenfunc=cenfunc,
+                               stdfunc=stdfunc
+                               )
         stars_i, _ = get_good_stars(data_i - bkg_i.background,
+                                    threshold=threshold,
+                                    box_size=box_size,
+                                    footprint=footprint,
+                                    mask=mask,
+                                    border_width=border_width,
+                                    npeaks=npeaks,
+                                    centroid_func=centroid_func,
+                                    subpixel=subpixel,
+                                    error=error,
+                                    wcs=wcs,
                                     stars_tbl=stars_tbl,
-                                    threshold=stars_threshold,
-                                    size=stars_size)
+                                    size=size)
         # build the psf using the stacked image
         # see also https://photutils.readthedocs.io/en/stable/epsf.html
-        epsf_i, _ = build_psf(
-            stars_i,
-            epsf_oversampling=epsf_oversampling,
-            epsf_smoothing_kernel=epsf_smoothing_kernel,
-            epsf_recentering_maxiters=epsf_recentering_maxiters,
-            epsf_maxiters=epsf_maxiters,
-            epsf_progress_bar=epsf_progress_bar,
-            epsf_norm_radius=epsf_norm_radius,
-            epsf_shift_val=epsf_shift_val,
-            epsf_recentering_boxsize=epsf_recentering_boxsize,
-            epsf_center_accuracy=epsf_center_accuracy,
-            show_stamps=show_stamps,
-            stamps_nrows=stamps_nrows,
-            stamps_ncols=stamps_ncols)
-        sigma = fit_gaussian_for_fwhm(epsf_i.data, sigma=sigma)
+        epsf_i, _ = build_psf(stars_i, **args)
+        sigma = fit_gaussian_for_fwhm(epsf_i.data, fit_sigma=fit_sigma)
         if sigma:
-            sigma_x.append(sigma[0] / epsf_oversampling)
-            sigma_y.append(sigma[1] / epsf_oversampling)
+            sigma_x.append(sigma[0] / oversampling)
+            sigma_y.append(sigma[1] / oversampling)
         else:
             sigma_x.append(sigma[0])
             sigma_y.append(sigma[1])
-
     sigma_x = np.array(sigma_x)
     sigma_y = np.array(sigma_y)
-
     return sigma_x, sigma_y
 
 
@@ -657,10 +690,11 @@ def generate_hotpants_script(ref_path,
                              pca=None,
                              v=None):
     '''
-
     -c and -ng are not available because they are always used based on the
     sigma_ref and sigma_list.
 
+    The following is copied from https://github.com/acbecker/hotpants
+    -----------------------------------------------------------------
     Version 5.1.11
     Required options:
     [-inim fitsfile]  : comparison image to be differenced
@@ -968,7 +1002,7 @@ def find_star(data,
               sharphi=2.0,
               n_threshold=5.,
               show=False,
-              *args):
+              **args):
     # Note that the get_good_stars() function only pick the best stars for
     # compting the FWHM, this function is for the actual star finding
     #
@@ -979,30 +1013,34 @@ def find_star(data,
     if finder == 'dao':
         star_finder = photutils.DAOStarFinder(fwhm=fwhm,
                                               threshold=n_threshold * std,
-                                              *args)
+                                              **args)
     elif finder == 'iraf':
         star_finder = photutils.IRAFStarFinder(fwhm=fwhm,
                                                threshold=n_threshold * std,
-                                               *args)
+                                               **args)
     else:
         raise Error('Unknown finder. Please choose from dao and iraf.')
-    sources_list = star_finder(data)
-    for col in sources_list.colnames:
-        sources_list[col].info.format = '%.10g'
+    source_list = star_finder(data)
+    for col in source_list.colnames:
+        source_list[col].info.format = '%.10g'
     if show:
-        positions = np.transpose((sources_list['xcentroid'], sources_list['ycentroid']))
+        positions = np.transpose(
+            (source_list['xcentroid'], source_list['ycentroid']))
         apertures = photutils.CircularAperture(positions, r=5.)
         norm = simple_norm(data, 'log', percent=99.9)
         plt.figure(figsize=(8, 8))
         plt.imshow(data, cmap='binary', origin='lower', norm=norm)
         apertures.plot(color='#0547f9', lw=1.5)
+        for source in source_list:
+            plt.annotate(str(source['id']),
+                         (source['xcentroid'], source['ycentroid']))
         plt.xlim(0, data.shape[1] - 1)
         plt.ylim(0, data.shape[0] - 1)
         plt.xlabel('x / pixel')
         plt.ylabel('y / pixel')
         plt.tight_layout()
         plt.grid(color='greenyellow', ls=':', lw=0.5)
-    return sources_list
+    return source_list
 
 
 def do_photometry(diff_image_list, source_list, sigma_list):
@@ -1011,8 +1049,8 @@ def do_photometry(diff_image_list, source_list, sigma_list):
     MJD = []
     mmm_bkg = MMMBackground()
     fitter = LevMarLSQFitter()
-    pos = Table(names=['x_0', 'y_0'], data=[source_list['xcentroid'],
-                                            source_list['ycentroid']])
+    pos = Table(names=['x_0', 'y_0'],
+                data=[source_list['xcentroid'], source_list['ycentroid']])
     for i, diff_image_path in enumerate(diff_image_list):
         fitsfile = fits.open(diff_image_path)[0]
         image = fitsfile.data
@@ -1024,28 +1062,27 @@ def do_photometry(diff_image_list, source_list, sigma_list):
         psf_model.x_0.fixed = True
         psf_model.y_0.fixed = True
         photometry = photutils.BasicPSFPhotometry(group_maker=daogroup,
-                                    bkg_estimator=mmm_bkg,
-                                    psf_model=psf_model,
-                                    fitter=LevMarLSQFitter(),
-                                    fitshape=(11,11))
+                                                  bkg_estimator=mmm_bkg,
+                                                  psf_model=psf_model,
+                                                  fitter=LevMarLSQFitter(),
+                                                  fitshape=(11, 11))
         result_tab.append(photometry(image=image, init_guesses=pos))
         result_tab[i]['mjd'] = np.ones(len(result_tab[i])) * MJD
     #residual_image = photometry.get_residual_image()
     return result_tab
 
 
-def plot_lightcurve(photometry_list, source_id=None, return_flux=True):
+def get_lightcurve(photometry_list, source_id=None):
     flux = []
     flux_err = []
     flux_fit = []
     mjd = []
     if source_id is None:
-        source_id = np.arange(len(photometry_list)).astype('int') + 1
-    plt.figure(figsize=(8, 8))
+        source_id = np.arange(len(photometry_list[0])).astype('int') + 1
     for i, id_i in enumerate(source_id):
         flux_i = []
         flux_err_i = []
-        flux_fit_i =[]
+        flux_fit_i = []
         mjd_i = []
         for list_i in photometry_list:
             mask = (list_i['id'] == id_i)
@@ -1056,15 +1093,64 @@ def plot_lightcurve(photometry_list, source_id=None, return_flux=True):
         flux_i = np.array(flux_i)
         flux_fit_i = np.array(flux_fit_i)
         flux_err_i = np.array(flux_err_i)
+        mjd_i = np.array(mjd_i)
         flux.append(flux_i)
         flux_fit.append(flux_fit_i)
         flux_err.append(flux_err_i)
-        mjd.append(np.array(mjd))
-        print(flux_i)
-        print(flux_err_i)
-        plt.errorbar(mjd_i, flux_i, yerr=[flux_err_i, flux_err_i], fmt='o', markersize=5)
-    plt.xlabel('MJD')
-    plt.ylabel('Flux / Count')
-    plt.tight_layout()
-    return flux, flux_err, flux_fit
+        mjd.append(mjd_i)
+    return source_id, mjd, flux, flux_err, flux_fit
 
+
+def plot_lightcurve(mjd, flux, flux_err, source_id=None, same_figure=True):
+    if np.shape(np.shape(flux))[0] == 1:
+        order = np.argsort(mjd)
+        plt.figure(figsize=(8, 8))
+        if source_id is None:
+            plt.errorbar(mjd[order],
+                         flux[order],
+                         yerr=flux_err[order],
+                         fmt='o',
+                         markersize=3)
+        else:
+            plt.errorbar(mjd[order],
+                         flux[order],
+                         yerr=flux_err[order],
+                         fmt='o',
+                         markersize=3,
+                         label=str(source_id))
+        plt.xlabel('MJD')
+        plt.ylabel('Flux / Count')
+        plt.grid(color='grey', ls=':', lw=0.5)
+        plt.tight_layout()
+        if source_id is not None:
+            plt.legend()
+    else:
+        if same_figure:
+            fig = plt.figure(figsize=(8, 8))
+            ax = fig.gca()
+        for i in range(len(flux)):
+            if not same_figure:
+                fig = plt.figure(i, figsize=(8, 8))
+                ax = fig.gca()
+            order = np.argsort(mjd[i])
+            if source_id is None:
+                ax.errorbar(mjd[i][order],
+                            flux[i][order],
+                            yerr=flux_err[i][order],
+                            fmt='o',
+                            markersize=5)
+            else:
+                ax.errorbar(mjd[i][order],
+                            flux[i][order],
+                            yerr=flux_err[i][order],
+                            fmt='o-',
+                            markersize=5,
+                            label=str(source_id[i]))
+                if not same_figure:
+                    plt.legend()
+        ax.set_xlabel('MJD')
+        ax.set_ylabel('Flux / Count')
+        ax.grid(color='grey', ls=':', lw=1)
+        plt.tight_layout()
+        if (source_id is not None) and same_figure:
+            plt.legend()
