@@ -613,7 +613,8 @@ def align_images(file_list,
 
         # After alignment is done, append the name to list
         aligned_file_list.append(outfile_path)
-        image_aligned_to_ref.write(outfile_path, overwrite=overwrite)
+        if overwrite:
+            image_aligned_to_ref.write(outfile_path, overwrite=overwrite)
 
     np.savetxt(os.path.join(output_path, 'aligned_file_list.txt'),
                aligned_file_list,
@@ -1229,7 +1230,7 @@ def get_all_fwhm(file_list,
             except:
                 sigma_x.append(np.inf)
                 sigma_y.append(np.inf)
-                
+
 
     sigma_x = np.array(sigma_x)
     sigma_y = np.array(sigma_y)
