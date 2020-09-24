@@ -885,7 +885,7 @@ def build_psf(stars,
         or a tuple of two floats of the form (x_oversamp, y_oversamp). If
         oversampling is a scalar then the oversampling will be the same for
         both the x and y axes.
-    smoothing_kernel: {‘quartic’, ‘quadratic’}, 2D ndarray, or None
+    smoothing_kernel: {'quartic', 'quadratic'}, 2D ndarray, or None
                       (Default: quartic')
         The smoothing kernel to apply to the ePSF. The predefined 'quartic'
         and 'quadratic' kernels are derived from fourth and second degree
