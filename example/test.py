@@ -25,6 +25,10 @@ file_list = generate_file_list(input_path, output_path=output_path)
 aligned_file_list, combiner = align_images(file_list=file_list,
                                            output_path=output_path,
                                            overwrite=overwrite,
+                                           xl=200,
+                                           xr=200,
+                                           yb=200,
+                                           yt=200,
                                            return_combiner=return_combiner)
 if return_combiner:
     # can also choose median_combine()
@@ -92,14 +96,14 @@ sigma_x, sigma_y = get_all_fwhm(aligned_file_list,
                                 sigma_upper=3.,
                                 threshold=5000.,
                                 box_size=25,
-                                recentering_maxiters=10,
-                                smoothing_kernel='quadratic',
                                 maxiters=10,
                                 norm_radius=5.5,
                                 npeaks=20,
                                 shift_val=0.01,
                                 recentering_boxsize=(5, 5),
+                                recentering_maxiters=10,
                                 center_accuracy=0.001,
+                                smoothing_kernel='quadratic',
                                 show_stamps=False)
 
 # Use the FWHM to generate script for hotpants
@@ -147,7 +151,7 @@ source_id, mjd, flux, flux_err, flux_fit = get_lightcurve(
 #plot_lightcurve(mjd, flux, flux_err, same_figure=False)
 
 # plot 1 lightcurve
-target = 62
+target = 10
 plot_lightcurve(mjd[np.where(source_id==target)[0]],
                 flux[np.where(source_id==target)[0]],
                 flux_err[np.where(source_id==target)[0]],
@@ -163,7 +167,7 @@ plot_lightcurve(phase,
 
 
 # plot a few lightcurves
-good_stars = [50, 52, 55, 59, 60, 66, 70, 62]
+good_stars = [1,3,5,8,10]
 mjd_good_stars = np.array([mjd[i] for i in good_stars])
 flux_good_stars = np.array([flux[i] for i in good_stars])
 flux_err_good_stars = np.array([flux_err[i] for i in good_stars])
