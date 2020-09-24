@@ -553,6 +553,7 @@ def align_images(file_list,
                 print('Image already aligned, set overwrite to True to '
                       'realign.')
                 aligned_file_list.append(outfile_path)
+                continue
 
         f = CCDData.read(f_to_align, unit=ccddata_unit)
 
