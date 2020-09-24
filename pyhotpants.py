@@ -528,11 +528,10 @@ def align_images(file_list,
     centre_x = int(width_x / 2 + xl)
     centre_y = int(width_y / 2 + yb)
 
-    image_ref_trimmed = Cutout2D(
-        image_ref.data,
-        position=(centre_x, centre_y),
-        size=(width_x, width_y),
-        wcs=f_ref.wcs)
+    image_ref_trimmed = Cutout2D(image_ref.data,
+                                 position=(centre_x, centre_y),
+                                 size=(width_x, width_y),
+                                 wcs=f_ref.wcs)
 
     if not os.path.exists(output_path):
         os.mkdir(output_path)
@@ -579,11 +578,10 @@ def align_images(file_list,
                 size=(width_x, width_y),
                 wcs=image_aligned_to_ref.wcs)
 
-            new_mask = Cutout2D(
-                image_aligned_to_ref.mask,
-                position=(centre_x, centre_y),
-                size=(width_x, width_y),
-                wcs=image_aligned_to_ref.wcs).data
+            new_mask = Cutout2D(image_aligned_to_ref.mask,
+                                position=(centre_x, centre_y),
+                                size=(width_x, width_y),
+                                wcs=image_aligned_to_ref.wcs).data
 
             # Update the output
             image_aligned_to_ref.data = image_aligned_to_ref_trimmed.data
@@ -630,7 +628,7 @@ def align_images(file_list,
 
         # Collate the sligned images
         combiner = ccdproc.Combiner(combiner_list, dtype=combiner_dtype)
-        # Clip the extrema 
+        # Clip the extrema
         combiner.sigma_clipping(low_thresh=sigma_clip_low,
                                 high_thresh=sigma_clip_high,
                                 func=sigma_clip_func)
@@ -644,7 +642,7 @@ def align_images(file_list,
         if combine_n_high - combine_n_low > combine_n_max:
             delta = int((n - combine_n_max) / 2)
             combine_n_high -= delta
-            combine_n_low -= delta
+            combine_n_low += delta
 
         combiner.clip_extrema(nlow=combine_n_low, nhigh=combine_n_high)
 
@@ -941,7 +939,10 @@ def build_psf(stars,
                                          smoothing_kernel=smoothing_kernel,
                                          maxiters=maxiters,
                                          **args)
-    epsf, fitted_stars = epsf_builder(stars)
+    try:
+        epsf, fitted_stars = epsf_builder(stars)
+    except:
+        return None, None, None
 
     if show_stamps:
         n_star = len(stars)
@@ -1217,9 +1218,17 @@ def get_all_fwhm(file_list,
         # build the psf using the stacked image
         # see also https://photutils.readthedocs.io/en/stable/epsf.html
         epsf_i, _, oversampling_factor = build_psf(stars_i, **args)
-        sigma = fit_gaussian_for_fwhm(epsf_i.data, fit_sigma=fit_sigma)
-        sigma_x.append(sigma[0] / oversampling_factor)
-        sigma_y.append(sigma[1] / oversampling_factor)
+
+        # If WCS reprojection failed, the entire image can land outside
+        # of the frame, in which case no photometry can be performed,
+        # (None, None, None) would have been returned.
+        if epsf_i is None:
+            sigma_x.append(np.inf)
+            sigma_y.append(np.inf)
+        else:
+            sigma = fit_gaussian_for_fwhm(epsf_i.data, fit_sigma=fit_sigma)
+            sigma_x.append(sigma[0] / oversampling_factor)
+            sigma_y.append(sigma[1] / oversampling_factor)
 
     sigma_x = np.array(sigma_x)
     sigma_y = np.array(sigma_y)
@@ -1659,14 +1668,14 @@ def run_hotpants(script, shell='zsh'):
                                      executable=shell,
                                      universal_newlines=True)
             out_file.write(process.stdout)
-    
+
     diff_image_list = []
     with open('diff_file_list.txt', 'w+') as out_file:
         for i in script:
             filepath = i.split(' ')[2].split('.')[0] + '_diff.fits'
             out_file.write(filepath + '\n')
             diff_image_list.append(filepath)
-    
+
     return diff_image_list
 
 
@@ -1686,7 +1695,7 @@ def find_star(data,
     Note that the get_good_stars() function only pick the best stars for
     compting the FWHM, this function is for the proper star finding. The
     input data should be sky-subtracted.
-    
+
     Parameters
     ----------
     data: array_like
@@ -1768,7 +1777,11 @@ def find_star(data,
     return source_list
 
 
-def do_photometry(diff_image_list, source_list, sigma_list, bkg_estimator=MMMBackground(), fitter=LevMarLSQFitter()):
+def do_photometry(diff_image_list,
+                  source_list,
+                  sigma_list,
+                  bkg_estimator=MMMBackground(),
+                  fitter=LevMarLSQFitter()):
     '''
     Perform forced PSF photometry on the list of differenced images based on
     the positions found from the reference/stacked image, the PSF is modelled
@@ -1832,7 +1845,13 @@ def do_photometry(diff_image_list, source_list, sigma_list, bkg_estimator=MMMBac
     return result_tab
 
 
-def get_lightcurve(photometry_list, source_id=None):
+def get_lightcurve(photometry_list,
+                   source_id=None,
+                   plot=False,
+                   use_flux_fit=False,
+                   xlabel='MJD',
+                   ylabel='Flux / Count',
+                   same_figure=True):
     '''
     Extract the lightcurves from the result table.
 
@@ -1841,7 +1860,19 @@ def get_lightcurve(photometry_list, source_id=None):
     photometry_list: Table
         The result table of the photometry.
     source_id: list of int (Default: None)
-        To specify source IDs to extract the light curves for.
+        To specify source IDs to extract the light curves for. None returns
+        everything in the photometry_list.
+    plot: boolean (Default: False)
+        Set to True to display the lightcurve plot(s).
+    use_flux_fit: boolean (Default: False)
+        Set to True to use the best fit *model* flux instead of the integrated
+        flux.
+    xlabel: str (Default: 'MJD')
+        The x label, which is usually in the unit of time/phase.
+    ylabel: str (Default: 'Flux / Count')
+        The y label, which is usually in the unit of count/ADU/magnitude.
+    same_figure: boolean (Default: True)
+        Set to True to display all lightcurves in one plot.
 
     Return
     ------
@@ -1892,6 +1923,24 @@ def get_lightcurve(photometry_list, source_id=None):
     flux = np.array(flux).T[0].T
     flux_fit = np.array(flux_fit).T[0].T
     flux_err = np.array(flux_err).T[0].T
+
+    if plot:
+        if use_flux_fit:
+            plot_lightcurve(mjd,
+                        flux_fit,
+                        flux_err,
+                        source_id=source_id,
+                        xlabel=xlabel,
+                        ylabel=ylabel,
+                        same_figure=same_figure)
+        else:
+            plot_lightcurve(mjd,
+                    flux,
+                    flux_err,
+                    source_id=source_id,
+                    xlabel=xlabel,
+                    ylabel=ylabel,
+                    same_figure=same_figure)
 
     return source_id, mjd, flux, flux_err, flux_fit
 
@@ -1963,6 +2012,9 @@ def plot_lightcurve(mjd,
         If True, plot all lightcurves in the same figure.
 
     '''
+
+    if isinstance(source_id, int):
+        source_id = [source_id]
 
     if np.shape(np.shape(flux))[0] == 1:
 

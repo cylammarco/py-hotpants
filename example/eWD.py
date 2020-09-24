@@ -9,12 +9,12 @@ from pyhotpants import *
 
 plt.ion()
 
-input_path = 'test_data'
-output_path = 'test_output'
+input_path = '/Users/marcolam/Desktop/Observation/gaia42929/RISE'
+output_path = '/Users/marcolam/Desktop/Observation/gaia42929/RISE/output'
 
 # parameters
-overwrite = False
-return_combiner = False
+overwrite = True
+return_combiner = True
 
 # generate file list
 file_list = generate_file_list(input_path, output_path=output_path)
@@ -25,10 +25,6 @@ file_list = generate_file_list(input_path, output_path=output_path)
 aligned_file_list, combiner = align_images(file_list=file_list,
                                            output_path=output_path,
                                            overwrite=overwrite,
-                                           xl=200,
-                                           xr=200,
-                                           yb=200,
-                                           yt=200,
                                            return_combiner=return_combiner)
 if return_combiner:
     # can also choose median_combine()
@@ -69,7 +65,7 @@ stars, stars_tbl = get_good_stars(data_stacked_bkg_sub,
                                   threshold=100.,
                                   box_size=25,
                                   npeaks=225,
-                                  edge_size=150)
+                                  size=30)
 
 # build the psf using the stacked image
 # see also https://photutils.readthedocs.io/en/stable/epsf.html
@@ -94,16 +90,16 @@ sigma_x, sigma_y = get_all_fwhm(aligned_file_list,
                                 sigma=3.,
                                 sigma_lower=3.,
                                 sigma_upper=3.,
-                                threshold=5000.,
+                                threshold=1000.,
                                 box_size=25,
+                                recentering_maxiters=10,
+                                smoothing_kernel='quadratic',
                                 maxiters=10,
                                 norm_radius=5.5,
-                                npeaks=20,
+                                npeaks=50,
                                 shift_val=0.01,
                                 recentering_boxsize=(5, 5),
-                                recentering_maxiters=10,
                                 center_accuracy=0.001,
-                                smoothing_kernel='quadratic',
                                 show_stamps=False)
 
 # Use the FWHM to generate script for hotpants
@@ -111,9 +107,9 @@ sigma_x, sigma_y = get_all_fwhm(aligned_file_list,
 sigma_ref = np.sqrt(sigma_x_stack**2. + sigma_y_stack**2.)
 sigma_list = np.sqrt(sigma_x**2. + sigma_y**2.)
 diff_image_script = generate_hotpants_script(
-    aligned_file_list[np.argmin(sigma_list)],
+    os.path.join(output_path, aligned_file_list[np.argmin(sigma_list)]),
     aligned_file_list,
-    min(sigma_list),
+    sigma_ref,
     sigma_list,
     hotpants='hotpants',
     write_to_file=True,
@@ -142,7 +138,7 @@ photometry_list = do_photometry(diff_image_list, source_list, sigma_list)
 
 # get lightcurves
 source_id, mjd, flux, flux_err, flux_fit = get_lightcurve(
-    photometry_list, source_list['id'], plot=True)
+    photometry_list, source_list['id'])
 
 # plot all lightcurves in the same figure
 #plot_lightcurve(mjd, flux, flux_err)
@@ -150,19 +146,27 @@ source_id, mjd, flux, flux_err, flux_fit = get_lightcurve(
 # plot all lightcurves in the separate figure
 #plot_lightcurve(mjd, flux, flux_err, same_figure=False)
 
-# Explicitly plot 1 lightcurve
-target = 10
+# plot 1 lightcurve
+target = 253
 plot_lightcurve(mjd[np.where(source_id==target)[0]],
                 flux[np.where(source_id==target)[0]],
                 flux_err[np.where(source_id==target)[0]],
-                source_id=target)
+                source_id=[target])
+
+period = 0.0161558
+phase = (mjd[np.where(source_id==target)[0]] / period) % 1
+plot_lightcurve(phase,
+                flux[np.where(source_id==target)[0]],
+                flux_err[np.where(source_id==target)[0]],
+                source_id=[target])
 
 
-# Explicitly plot a few lightcurves
-good_stars = [1,3,5,8,10]
-mjd_good_stars = np.array([mjd[i] for i in good_stars])
-flux_good_stars = np.array([flux[i] for i in good_stars])
-flux_err_good_stars = np.array([flux_err[i] for i in good_stars])
+
+# plot a few lightcurves
+good_stars = [233, 249, 253, 256, 277, 298, 299, 267]
+mjd_good_stars = np.array([mjd[np.where(source_id==i)[0]][0] for i in good_stars])
+flux_good_stars = np.array([flux[np.where(source_id==i)[0]][0] for i in good_stars])
+flux_err_good_stars = np.array([flux_err[np.where(source_id==i)[0]][0] for i in good_stars])
 
 flux_ensemble = ensemble_photometry(flux_good_stars, flux_err_good_stars)
 
