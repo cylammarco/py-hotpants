@@ -553,10 +553,6 @@ def align_images(file_list,
                 print('Image already aligned, set overwrite to True to '
                       'realign.')
                 aligned_file_list.append(outfile_path)
-                if return_combiner:
-                    combiner_list.append(
-                        CCDData.read(outfile_path, unit=ccddata_unit))
-                continue
 
         f = CCDData.read(f_to_align, unit=ccddata_unit)
 
@@ -1226,9 +1222,14 @@ def get_all_fwhm(file_list,
             sigma_x.append(np.inf)
             sigma_y.append(np.inf)
         else:
-            sigma = fit_gaussian_for_fwhm(epsf_i.data, fit_sigma=fit_sigma)
-            sigma_x.append(sigma[0] / oversampling_factor)
-            sigma_y.append(sigma[1] / oversampling_factor)
+            try:
+                sigma = fit_gaussian_for_fwhm(epsf_i.data, fit_sigma=fit_sigma)
+                sigma_x.append(sigma[0] / oversampling_factor)
+                sigma_y.append(sigma[1] / oversampling_factor)
+            except:
+                sigma_x.append(np.inf)
+                sigma_y.append(np.inf)
+                
 
     sigma_x = np.array(sigma_x)
     sigma_y = np.array(sigma_y)
