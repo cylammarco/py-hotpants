@@ -1,5 +1,6 @@
 import glob
 import os
+import pickle
 import subprocess
 import sys
 import warnings
@@ -26,7 +27,7 @@ from scipy.optimize import curve_fit
 warnings.simplefilter('ignore', category=AstropyWarning)
 
 
-def generate_file_list(input_path, output_path, filetype='fits'):
+def generate_file_list(input_folder, output_folder, filetype='fits'):
     '''
     Genearte a text file containing all the files to be processed. It also
     returns the list.
@@ -34,10 +35,10 @@ def generate_file_list(input_path, output_path, filetype='fits'):
 
     Parameters
     ----------
-    input_path: str
-        Path containing the files to be processed.
-    output_path: str
-        Path for the outputs. If the folder does not exist, it will be
+    input_folder: str
+        Folder containing the files to be processed.
+    output_folder: str
+        Folder for the outputs. If the folder does not exist, it will be
         created.
     filetype: str (Default: fits)
         Extension of the files to be processed
@@ -49,16 +50,18 @@ def generate_file_list(input_path, output_path, filetype='fits'):
     '''
 
     # Get the file list from the folder
-    file_list = glob.glob(os.path.join(input_path, "*." + filetype))
+    file_list = glob.glob(os.path.join(input_folder, "*." + filetype))
 
     # Sort alpha-numerically
     sorted(file_list,
            key=lambda item: (int(item.partition(' ')[0])
                              if item[0].isdigit() else float('inf'), item))
-    if not os.path.exists(output_path):
-        os.mkdir(output_path)
+    if not os.path.exists(output_folder):
+        os.mkdir(output_folder)
 
-    np.savetxt(os.path.join(output_path, 'file_list.txt'), file_list, fmt='%s')
+    np.savetxt(os.path.join(output_folder, 'file_list.txt'),
+               file_list,
+               fmt='%s')
 
     return file_list
 
@@ -429,7 +432,7 @@ def cross_correlation_shifts(image1,
 
 
 def align_images(file_list,
-                 output_path,
+                 output_folder,
                  overwrite=True,
                  ccddata_unit=u.ct,
                  ref=None,
@@ -449,15 +452,18 @@ def align_images(file_list,
                  sigma_clip_high=1,
                  sigma_clip_func=np.ma.mean,
                  clip_extrema_low_percentile=15.9,
-                 clip_extrema_high_percentile=15.9):
+                 clip_extrema_high_percentile=15.9,
+                 save_list=True,
+                 list_overwrite=True,
+                 list_filename='aligned_file_list'):
     '''
     Parameters
     ----------
     file_list : str
         List of file paths of the images to be aligned.
-    output_path: str
-        Path for the outputs. If the folder does not exist, it will be
-        created.
+    output_folder: str
+        Path to the folder for the outputs. If the folder does not exist, it
+        will be created.
     overwrite: boolean (Default: True)
         Set to true to overwrite files if the file already exists. 
     ccddata_unit: astroypy unit (Default: u.ct)
@@ -533,8 +539,8 @@ def align_images(file_list,
                                  size=(width_x, width_y),
                                  wcs=f_ref.wcs)
 
-    if not os.path.exists(output_path):
-        os.mkdir(output_path)
+    if not os.path.exists(output_folder):
+        os.mkdir(output_folder)
 
     aligned_file_list = []
 
@@ -545,7 +551,7 @@ def align_images(file_list,
         print('Aligning image ' + str(i + 1) + ' of ' + str(len(file_list)) +
               '.')
         outfile_name = f_to_align.split('.')[0] + '_aligned.fits'
-        outfile_path = os.path.join(output_path, outfile_name.split('/')[-1])
+        outfile_path = os.path.join(output_folder, outfile_name.split('/')[-1])
 
         # Check if file exists and whether to overwrite
         if os.path.exists(outfile_path):
@@ -617,9 +623,15 @@ def align_images(file_list,
         if overwrite:
             image_aligned_to_ref.write(outfile_path, overwrite=overwrite)
 
-    np.savetxt(os.path.join(output_path, 'aligned_file_list.txt'),
-               aligned_file_list,
-               fmt='%s')
+    if save_list and (not list_overwrite):
+        print(
+            os.path.join(output_folder, list_filename) + '.txt already '
+            'exists. Use a different name or set overwrite to True. EPSFModel '
+            'and EPSFStar are not saved to disk.')
+    else:
+        np.savetxt(os.path.join(output_folder, list_filename) + '.txt',
+                   aligned_file_list,
+                   fmt='%s')
 
     # Return the file list for the aligned images and the combiner
     if return_combiner:
@@ -661,6 +673,12 @@ def get_background(data,
                    cenfunc='median',
                    stdfunc='std',
                    bkg_estimator=photutils.MedianBackground(),
+                   create_figure=True,
+                   save_figure=True,
+                   save_bkg=True,
+                   overwrite=True,
+                   output_folder='.',
+                   filename='background',
                    **args):
     '''
     Compute the background of the image.
@@ -709,6 +727,33 @@ def get_background(data,
                                  sigma_clip=sigma_clip,
                                  bkg_estimator=bkg_estimator,
                                  **args)
+    if create_figure:
+        # Plot
+        norm = simple_norm(data, 'log', percent=99.)
+        norm_bkg = simple_norm(bkg.background, 'log', percent=99.)
+        norm_sub = simple_norm(data - bkg.background, 'log', percent=99.)
+
+        f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
+        ax1.imshow(data, norm=norm, origin='lower')
+        ax2.imshow(bkg.background, norm=norm_bkg, origin='lower')
+        ax3.imshow(data - bkg.background, norm=norm_sub, origin='lower')
+        ax4.set_xticklabels('')
+        ax4.set_yticklabels('')
+
+        if save_figure:
+            plt.savefig(
+                os.path.join(output_folder, 'background_subtraction.png'))
+
+    if save_bkg:
+        output_path = os.path.join(output_folder, filename)
+
+        if os.path.exists(output_path) or (not overwrite):
+            print(
+                output_path + '.npy already '
+                'exists. Use a different name or set overwrite to True. Background '
+                'is not saved to disk.')
+        else:
+            np.save(output_path, bkg)
 
     return bkg
 
@@ -727,6 +772,13 @@ def get_good_stars(data,
                    stars_tbl=None,
                    edge_size=50,
                    size=25,
+                   output_folder='.',
+                   save_stars=True,
+                   stars_overwrite=True,
+                   stars_filename='good_stars',
+                   save_stars_tbl=True,
+                   stars_tbl_overwrite=True,
+                   stars_tbl_filename='good_stars_tbl',
                    **args):
     '''
     Get the centroids of the bright sources to prepare to compute the FWHM.
@@ -850,11 +902,31 @@ def get_good_stars(data,
         stars_tbl['x'] = x + edge_size
         stars_tbl['y'] = y + edge_size
 
+        if save_stars_tbl:
+            stars_tbl_output_path = os.path.join(output_folder, stars_tbl_filename + '.npy')
+            if os.path.exists(stars_tbl_output_path) and (not stars_tbl_overwrite):
+                print(
+                    stars_tbl_output_path + ' already exists. Use a '
+                    'different name or set overwrite to True. EPSFModel is not '
+                    'saved to disk.')
+            else:
+                np.save(stars_tbl_output_path, stars_tbl)
+
     nddata = NDData(data=data, **args)
 
     # assign npeaks mask again because if stars_tbl is given, the npeaks
     # have to be selected
     stars = extract_stars(nddata, catalogs=stars_tbl[:npeaks], size=size)
+
+    if save_stars:
+        stars_output_path = os.path.join(output_folder, stars_filename + '.pbl')
+        if os.path.exists(stars_output_path) and (not stars_overwrite):
+            print(stars_output_path + ' already exists. Use a different '
+                  'name or set overwrite to True. EPSFStar is not saved to '
+                  'disk.')
+        else:
+            with open(stars_output_path, 'wb+') as f:
+                pickle.dump(stars, f)
 
     return stars, stars_tbl
 
@@ -863,10 +935,18 @@ def build_psf(stars,
               oversampling=None,
               smoothing_kernel='quartic',
               maxiters=10,
-              show_stamps=False,
+              create_figure=False,
+              save_figure=True,
               stamps_nrows=None,
               stamps_ncols=None,
               figsize=(10, 10),
+              output_folder='.',
+              save_epsf_model=True,
+              model_overwrite=True,
+              model_filename='epsf_model',
+              save_epsf_star=True,
+              stars_overwrite=True,
+              stars_filename='epsf_star',
               **args):
     '''
     data is best background subtracted
@@ -875,8 +955,8 @@ def build_psf(stars,
 
     Parameters
     ----------
-    stars:
-
+    stars: EPSFStars instance
+        A photutils.psf.EPSFStars instance containing the extracted stars.
     oversampling: int or tuple of two int, optional(Default: None)
         The oversampling factor(s) of the ePSF relative to the input stars
         along the x and y axes. The oversampling can either be a single float
@@ -891,7 +971,7 @@ def build_psf(stars,
         input. If None then no smoothing will be performed.
     maxiters: int, optional (Default: 10)
         The maximum number of iterations to perform.
-    show_stamps: boolean (Default: False)
+    create_figure: boolean (Default: False)
         Display the cutouts of the regions used for building the PSF.
     stamps_nrows: (Default: None)
         Number of rows to display. This does NOT affect the number of stars
@@ -942,7 +1022,7 @@ def build_psf(stars,
     except:
         return None, None, None
 
-    if show_stamps:
+    if create_figure:
         n_star = len(stars)
         # Get the nearest square number to fill if the number of rows and/or
         # columns is/are not provided.
@@ -978,7 +1058,37 @@ def build_psf(stars,
             except:
                 ax[i].set_xticklabels('')
                 ax[i].set_yticklabels('')
-        plt.show()
+
+        if save_figure:
+            plt.savefig(os.path.join(output_folder, 'ePSF_stamps.png'))
+
+        epsf_norm = simple_norm(epsf.data, 'log', percent=99.)
+
+        plt.figure()
+        plt.imshow(epsf.data, norm=epsf_norm, origin='lower')
+        plt.colorbar()
+
+        if save_figure:
+            plt.savefig(os.path.join(output_folder, 'ePSF.png'))
+
+    if save_epsf_model:
+        model_output_path = os.path.join(output_folder, model_filename)
+        if os.path.exists(model_output_path) and (not model_overwrite):
+            print(model_output_path + ' already exists. Use a different name '
+                  'or set overwrite to True. EPSFModel is not '
+                  'saved to disk.')
+        else:
+            np.save(model_output_path, epsf)
+
+    if save_epsf_star:
+        stars_output_path = os.path.join(output_folder, stars_filename)
+        if os.path.exists(stars_output_path) and (not stars_overwrite):
+            print(stars_output_path + ' already exists. Use a different name '
+                  'or set overwrite to True. EPSFStar is not '
+                  'saved to disk.')
+        else:
+            with open(stars_output_path + '.pbl', 'wb+') as f:
+                pickle.dump(fitted_stars, f)
 
     return epsf, fitted_stars, oversampling
 
@@ -1066,6 +1176,10 @@ def get_all_fwhm(file_list,
                  error=None,
                  wcs=None,
                  size=25,
+                 save_fwhm=True,
+                 overwrite=True,
+                 output_folder='.',
+                 filename=None,
                  **args):
     '''
     Compute the FWHM of all the frames using the same stars given by the
@@ -1196,7 +1310,9 @@ def get_all_fwhm(file_list,
                                maxiters=maxiters,
                                bkg_estimator=bkg_estimator,
                                cenfunc=cenfunc,
-                               stdfunc=stdfunc)
+                               stdfunc=stdfunc,
+                               create_figure=False,
+                               save_bkg=False)
         # Extract the bright point sources
         stars_i, _ = get_good_stars(data_i - bkg_i.background,
                                     threshold=threshold,
@@ -1211,11 +1327,17 @@ def get_all_fwhm(file_list,
                                     wcs=wcs,
                                     stars_tbl=stars_tbl,
                                     edge_size=50,
-                                    size=size)
+                                    size=size,
+                                    save_stars=False,
+                                    save_stars_tbl=False)
 
         # build the psf using the stacked image
         # see also https://photutils.readthedocs.io/en/stable/epsf.html
-        epsf_i, _, oversampling_factor = build_psf(stars_i, **args)
+        epsf_i, _, oversampling_factor = build_psf(stars_i,
+                                                   save_epsf_model=False,
+                                                   save_epsf_star=False,
+                                                   create_figure=False,
+                                                   **args)
 
         # If WCS reprojection failed, the entire image can land outside
         # of the frame, in which case no photometry can be performed,
@@ -1232,9 +1354,23 @@ def get_all_fwhm(file_list,
                 sigma_x.append(np.inf)
                 sigma_y.append(np.inf)
 
-
     sigma_x = np.array(sigma_x)
     sigma_y = np.array(sigma_y)
+
+    if save_fwhm:
+
+        if filename is None:
+            if fit_sigma:
+                filename = 'sigma.txt'
+            else:
+                filename = 'fwhm.txt'
+
+        output_path = os.path.join(output_folder, filename)
+        if os.path.exists(output_path) and (not overwrite):
+            print(output_path + ' already exists. Use a different name or set '
+                  'overwrite to True. Photometry is not saved to disk.')
+        else:
+            np.savetxt(output_path, np.column_stack((sigma_x, sigma_y)))
 
     return sigma_x, sigma_y
 
@@ -1461,7 +1597,7 @@ def generate_hotpants_script(ref_path,
 
     Return
     ------
-    output: list of str
+    script: list of str
         The list of strings that can be executed in shell.
 
     '''
@@ -1472,7 +1608,7 @@ def generate_hotpants_script(ref_path,
               'overwrite to True if you wish to regenerate a new script.')
     else:
         t_sigma = sigma_ref
-        output = []
+        script = []
         for i, aligned_file_path in enumerate(aligned_file_list):
             i_sigma = sigma_list[i]
             if i_sigma < t_sigma:
@@ -1632,19 +1768,19 @@ def generate_hotpants_script(ref_path,
             if v is not None:
                 out_string += '-v ' + str(v) + ' '
             out_string = out_string[:-1]
-            output.append(out_string)
+            script.append(out_string)
 
         if write_to_file:
             with open(filename, "w+") as out_file:
-                for i in output:
+                for i in script:
                     out_file.write(i + '\n')
 
             os.chmod(filename, 0o755)
 
-        return output
+        return script
 
 
-def run_hotpants(script, shell='zsh'):
+def run_hotpants(script, output_folder='.', shell=None):
     '''
     Compute the difference images with HOTPANTS by running shell commands.
 
@@ -1662,8 +1798,11 @@ def run_hotpants(script, shell='zsh'):
 
     '''
 
+    if shell is None:
+        shell = os.environ['SHELL']
+
     # Pipe the script to a log file.
-    with open('diff_image.log', 'w+') as out_file:
+    with open(os.path.join(output_folder, 'diff_image.log'), 'w+') as out_file:
         for i in script:
             process = subprocess.run(i,
                                      stdout=subprocess.PIPE,
@@ -1673,7 +1812,7 @@ def run_hotpants(script, shell='zsh'):
             out_file.write(process.stdout)
 
     diff_image_list = []
-    with open('diff_file_list.txt', 'w+') as out_file:
+    with open(os.path.join(output_folder, 'diff_file_list.txt'), 'w+') as out_file:
         for i in script:
             filepath = i.split(' ')[2].split('.')[0] + '_diff.fits'
             out_file.write(filepath + '\n')
@@ -1693,6 +1832,11 @@ def find_star(data,
               sharphi=2.,
               n_threshold=5.,
               show=False,
+              save_figure=True,
+              save_source_list=True,
+              overwrite=True,
+              output_folder='.',
+              filename='source_list',
               **args):
     '''
     Note that the get_good_stars() function only pick the best stars for
@@ -1745,7 +1889,7 @@ def find_star(data,
                                                threshold=n_threshold * std,
                                                **args)
     else:
-        raise Error('Unknown finder. Please choose from dao and iraf.')
+        raise Error('Unknown finder. Please choose from \'dao\' and \'iraf\'.')
 
     # Find the stars
     source_list = star_finder(data)
@@ -1776,6 +1920,17 @@ def find_star(data,
         plt.ylabel('y / pixel')
         plt.tight_layout()
         plt.grid(color='greenyellow', ls=':', lw=0.5)
+        if save_figure:
+            plt.savefig(os.path.join(output_folder, 'star_finder.png'))
+
+    if save_source_list:
+        output_path = os.path.join(output_folder, filename)
+        if os.path.exists(output_path) and (not overwrite):
+            print(output_path + ' already exists. Use a different name '
+                  'or set overwrite to True. EPSFModel and EPSFStar are not '
+                  'saved to disk.')
+        else:
+            np.save(output_path, source_list)
 
     return source_list
 
@@ -1784,7 +1939,11 @@ def do_photometry(diff_image_list,
                   source_list,
                   sigma_list,
                   bkg_estimator=MMMBackground(),
-                  fitter=LevMarLSQFitter()):
+                  fitter=LevMarLSQFitter(),
+                  save_tbl=True,
+                  overwrite=True,
+                  output_folder='.',
+                  filename='photometry_tbl'):
     '''
     Perform forced PSF photometry on the list of differenced images based on
     the positions found from the reference/stacked image, the PSF is modelled
@@ -1845,6 +2004,14 @@ def do_photometry(diff_image_list,
         result_tab.append(photometry(image=image, init_guesses=pos))
         result_tab[i]['mjd'] = np.ones(len(result_tab[i])) * MJD
 
+    if save_tbl:
+        output_path = os.path.join(output_folder, filename)
+        if os.path.exists(output_path) and (not overwrite):
+            print(output_path + ' already exists. Use a different name or set '
+                  'overwrite to True. Photometry is not saved to disk.')
+        else:
+            np.save(output_path, save_tbl)
+
     return result_tab
 
 
@@ -1854,7 +2021,11 @@ def get_lightcurve(photometry_list,
                    use_flux_fit=False,
                    xlabel='MJD',
                    ylabel='Flux / Count',
-                   same_figure=True):
+                   same_figure=True,
+                   save_figure=True,
+                   overwrite=True,
+                   output_folder='.',
+                   filename='lightcurves'):
     '''
     Extract the lightcurves from the result table.
 
@@ -1930,20 +2101,33 @@ def get_lightcurve(photometry_list,
     if plot:
         if use_flux_fit:
             plot_lightcurve(mjd,
-                        flux_fit,
-                        flux_err,
-                        source_id=source_id,
-                        xlabel=xlabel,
-                        ylabel=ylabel,
-                        same_figure=same_figure)
+                            flux_fit,
+                            flux_err,
+                            source_id=source_id,
+                            xlabel=xlabel,
+                            ylabel=ylabel,
+                            output_folder=output_folder,
+                            same_figure=same_figure,
+                            save_figure=save_figure)
         else:
             plot_lightcurve(mjd,
-                    flux,
-                    flux_err,
-                    source_id=source_id,
-                    xlabel=xlabel,
-                    ylabel=ylabel,
-                    same_figure=same_figure)
+                            flux,
+                            flux_err,
+                            source_id=source_id,
+                            xlabel=xlabel,
+                            ylabel=ylabel,
+                            output_folder=output_folder,
+                            same_figure=same_figure,
+                            save_figure=save_figure)
+
+    if save_figure:
+        output_path = os.path.join(output_folder, filename)
+        if os.path.exists(output_path) and (not overwrite):
+            print(output_path + ' already exists. Use a different name or set '
+                  'overwrite to True. Lightcurves are not saved to disk.')
+        else:
+            np.save(output_path,
+                    np.column_stack((mjd, flux, flux_err, flux_fit)))
 
     return source_id, mjd, flux, flux_err, flux_fit
 
@@ -1993,7 +2177,9 @@ def plot_lightcurve(mjd,
                     source_id=None,
                     xlabel='MJD',
                     ylabel='Flux / Count',
-                    same_figure=True):
+                    output_folder='.',
+                    same_figure=True,
+                    save_figure=True):
     '''
     Plot the lightcurves.
 
@@ -2045,8 +2231,14 @@ def plot_lightcurve(mjd,
 
         if source_id is not None:
             plt.legend()
+
+        if save_figure:
+            plt.savefig(os.path.join(output_folder, 'lightcurve.png'))
+
     else:
+
         if same_figure:
+
             fig = plt.figure(figsize=(8, 8))
             ax = fig.gca()
 
@@ -2073,9 +2265,26 @@ def plot_lightcurve(mjd,
                 if not same_figure:
                     plt.legend()
 
-        ax.set_xlabel('MJD')
-        ax.set_ylabel('Flux / Count')
-        ax.grid(color='grey', ls=':', lw=1)
-        plt.tight_layout()
-        if (source_id is not None) and same_figure:
-            plt.legend()
+            if not same_figure:
+                ax.set_xlabel('MJD')
+                ax.set_ylabel('Flux / Count')
+                ax.grid(color='grey', ls=':', lw=1)
+                plt.tight_layout()
+
+                if save_figure:
+                    plt.savefig(
+                        os.path.join(output_folder,
+                                     'lightcurve_' + str(i) + '.png'))
+
+        if same_figure:
+
+            ax.set_xlabel('MJD')
+            ax.set_ylabel('Flux / Count')
+            ax.grid(color='grey', ls=':', lw=1)
+            plt.tight_layout()
+
+            if save_figure:
+                plt.savefig(os.path.join(output_folder, 'lightcurve.png'))
+
+            if (source_id is not None) and same_figure:
+                plt.legend()

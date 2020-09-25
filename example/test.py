@@ -9,21 +9,21 @@ from pyhotpants import *
 
 plt.ion()
 
-input_path = 'test_data'
-output_path = 'test_output'
+input_folder = 'test_data'
+output_folder = 'test_output'
 
 # parameters
-overwrite = False
-return_combiner = False
+overwrite = True
+return_combiner = True
 
 # generate file list
-file_list = generate_file_list(input_path, output_path=output_path)
+file_list = generate_file_list(input_folder, output_folder=output_folder)
 
 # cross-correlate to align the images (because wcs fit fails regularly in dense field)
 # see also https://image-registration.readthedocs.io/en/latest/index.html
 # see also https://ccdproc.readthedocs.io/en/latest/image_combination.html
 aligned_file_list, combiner = align_images(file_list=file_list,
-                                           output_path=output_path,
+                                           output_folder=output_folder,
                                            overwrite=overwrite,
                                            xl=200,
                                            xr=200,
@@ -33,53 +33,39 @@ aligned_file_list, combiner = align_images(file_list=file_list,
 if return_combiner:
     # can also choose median_combine()
     data_stacked = combiner.average_combine()
-    fits.HDUList(fits.PrimaryHDU(np.array(data_stacked))).writeto(os.path.join(
-        output_path, 'stacked.fits'),
-                                                                  overwrite=True)
+    fits.HDUList(fits.PrimaryHDU(np.array(data_stacked))).writeto(
+        os.path.join(output_folder, 'stacked.fits'), overwrite=True)
 else:
-    data_stacked = fits.open(os.path.join(output_path, 'stacked.fits'))[0].data
-
+    data_stacked = fits.open(os.path.join(output_folder,
+                                          'stacked.fits'))[0].data
 
 # background subtraction
 # see also https://photutils.readthedocs.io/en/stable/background.html
 bkg = get_background(data_stacked,
                      maxiters=10,
                      box_size=(31, 31),
-                     filter_size=(7, 7))
+                     filter_size=(7, 7),
+                     create_figure=True,
+                     output_folder=output_folder)
 data_stacked_bkg_sub = data_stacked - bkg.background
-
-# Plot
-align_ref_img = fits.open(aligned_file_list[0])[0].data
-norm = simple_norm(data_stacked_bkg_sub, 'log', percent=99.)
-
-f, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2)
-ax1.imshow(np.log10(align_ref_img),
-           origin='lower',
-           vmin=np.nanpercentile(np.log10(align_ref_img), 10),
-           vmax=np.nanpercentile(np.log10(align_ref_img), 90))
-ax2.imshow(np.log10(data_stacked),
-           origin='lower',
-           vmin=np.nanpercentile(np.log10(data_stacked), 10),
-           vmax=np.nanpercentile(np.log10(data_stacked), 90))
-ax3.imshow(np.log10(bkg.background), origin='lower')
-ax4.imshow(data_stacked_bkg_sub, norm=norm, origin='lower')
 
 # Get the star stamps to build psf
 stars, stars_tbl = get_good_stars(data_stacked_bkg_sub,
                                   threshold=100.,
                                   box_size=25,
                                   npeaks=225,
-                                  edge_size=150)
+                                  edge_size=150,
+                                  output_folder=output_folder)
 
 # build the psf using the stacked image
 # see also https://photutils.readthedocs.io/en/stable/epsf.html
 epsf, fitted_stars, oversampling_factor = build_psf(
-    stars, smoothing_kernel='quadratic', maxiters=20, show_stamps=True)
-epsf_norm = simple_norm(epsf.data, 'log', percent=99.)
-
-plt.figure(5)
-plt.imshow(epsf.data, norm=epsf_norm, origin='lower')
-plt.colorbar()
+    stars,
+    smoothing_kernel='quadratic',
+    maxiters=20,
+    create_figure=True,
+    save_figure=True,
+                                output_folder=output_folder)
 
 # Get the FWHM
 # for the stack
@@ -104,7 +90,7 @@ sigma_x, sigma_y = get_all_fwhm(aligned_file_list,
                                 recentering_maxiters=10,
                                 center_accuracy=0.001,
                                 smoothing_kernel='quadratic',
-                                show_stamps=False)
+                                output_folder=output_folder)
 
 # Use the FWHM to generate script for hotpants
 # see also https://github.com/acbecker/hotpants
@@ -117,7 +103,7 @@ diff_image_script = generate_hotpants_script(
     sigma_list,
     hotpants='hotpants',
     write_to_file=True,
-    filename=os.path.join(output_path, 'diff_image.sh'),
+    filename=os.path.join(output_folder, 'diff_image.sh'),
     overwrite=True,
     tu=50000,
     tg=2.4,
@@ -126,23 +112,26 @@ diff_image_script = generate_hotpants_script(
     ig=2.4,
     ir=12.)
 # run hotpants
-diff_image_list = run_hotpants(diff_image_script)
+diff_image_list = run_hotpants(diff_image_script, output_folder=output_folder)
 
 # Use the FWHM to find the stars in the stacked image
 # see also https://photutils.readthedocs.io/en/stable/detection.html
 source_list = find_star(data_stacked_bkg_sub,
                         fwhm=sigma_x_stack * 2.355,
                         n_threshold=10.,
-                        show=True)
+                        show=True,
+                        output_folder=output_folder)
 
 # Use the psf and stars to perform photometry on the stacked image
 # see also https://photutils.readthedocs.io/en/latest/psf.html
-mask = np.argsort(source_list['peak'].data)
-photometry_list = do_photometry(diff_image_list, source_list, sigma_list)
+photometry_list = do_photometry(diff_image_list,
+                                source_list,
+                                sigma_list,
+                                output_folder=output_folder)
 
 # get lightcurves
 source_id, mjd, flux, flux_err, flux_fit = get_lightcurve(
-    photometry_list, source_list['id'], plot=True)
+    photometry_list, source_list['id'], plot=True, output_folder=output_folder)
 
 # plot all lightcurves in the same figure
 #plot_lightcurve(mjd, flux, flux_err)
@@ -152,14 +141,14 @@ source_id, mjd, flux, flux_err, flux_fit = get_lightcurve(
 
 # Explicitly plot 1 lightcurve
 target = 10
-plot_lightcurve(mjd[np.where(source_id==target)[0]],
-                flux[np.where(source_id==target)[0]],
-                flux_err[np.where(source_id==target)[0]],
-                source_id=target)
-
+plot_lightcurve(mjd[np.where(source_id == target)[0]],
+                flux[np.where(source_id == target)[0]],
+                flux_err[np.where(source_id == target)[0]],
+                source_id=target,
+                output_folder=output_folder)
 
 # Explicitly plot a few lightcurves
-good_stars = [1,3,5,8,10]
+good_stars = [1, 3, 5, 8, 10]
 mjd_good_stars = np.array([mjd[i] for i in good_stars])
 flux_good_stars = np.array([flux[i] for i in good_stars])
 flux_err_good_stars = np.array([flux_err[i] for i in good_stars])
@@ -169,9 +158,11 @@ flux_ensemble = ensemble_photometry(flux_good_stars, flux_err_good_stars)
 plot_lightcurve(mjd_good_stars,
                 flux_good_stars,
                 flux_err_good_stars,
-                source_id=good_stars)
+                source_id=good_stars,
+                output_folder=output_folder)
 
 plot_lightcurve(mjd_good_stars,
                 flux_ensemble,
                 flux_err_good_stars,
-                source_id=good_stars)
+                source_id=good_stars,
+                output_folder=output_folder)
