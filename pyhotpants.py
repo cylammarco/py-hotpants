@@ -441,10 +441,9 @@ def align_images(file_list,
                  order='bilinear',
                  add_keyword=True,
                  fill_value=0.,
-                 xl=0,
-                 xr=0,
-                 yb=0,
-                 yt=0,
+                 ra=None,
+                 dec=None,
+                 size=None,
                  return_combiner=False,
                  combiner_dtype=None,
                  combine_n_max=20,
@@ -527,17 +526,54 @@ def align_images(file_list,
     f_ref = CCDData.read(ref, unit=ccddata_unit)
     image_ref = f_ref.data
 
-    # Get the new size and centre
+    # Get the size
     len_x, len_y = np.shape(image_ref.data)
-    width_x = len_x - xr - xl
-    width_y = len_y - yt - yb
-    centre_x = int(width_x / 2 + xl)
-    centre_y = int(width_y / 2 + yb)
+    if size is None:
+        width_x = len_x
+        width_y = len_y
+    else:
+        width_x = size
+        width_y = size
 
+    # Get the pixel coordinate of the target in the reference frame
+    if (ra is not None) and (dec is not None):
+        centre_x, centre_y = f_ref.wcs.all_world2pix(ra,
+                                     dec,
+                                     1,
+                                     tolerance=1e-4,
+                                     maxiter=20,
+                                     adaptive=False,
+                                     detect_divergence=True,
+                                     quiet=False)
+    else:
+        centre_x = int(len_x / 2)
+        centre_y = int(len_y / 2)
+
+    print('The centroid of the target in the reference frame is at pixel ({}, {}).'.format(centre_x, centre_y))
+
+    # Get the cutout
     image_ref_trimmed = Cutout2D(image_ref.data,
                                  position=(centre_x, centre_y),
                                  size=(width_x, width_y),
                                  wcs=f_ref.wcs)
+
+    # Get the pixel coordinate of the target in the reference frame AFTER
+    # cutout
+    if (ra is not None) and (dec is not None):
+        centre_x, centre_y = image_ref_trimmed.wcs.all_world2pix(ra,
+                                     dec,
+                                     1,
+                                     tolerance=1e-4,
+                                     maxiter=20,
+                                     adaptive=False,
+                                     detect_divergence=True,
+                                     quiet=False)
+    else:
+        centre_x = int(image_ref_trimmed.size[0] / 2)
+        centre_y = int(image_ref_trimmed.size[1] / 2)
+
+    print('The centroid of the target in the reference frame CUTOUT is at pixel ({}, {}).'.format(centre_x, centre_y))
+
 
     if not os.path.exists(output_folder):
         os.mkdir(output_folder)
@@ -596,23 +632,34 @@ def align_images(file_list,
         elif method == 'cc':
             header = f.header
             image = f.data
-            header['NAXIS1'] = width_x
-            header['NAXIS2'] = width_y
 
             # 2d cross correlate two frames
-            yoff, xoff = cross_correlation_shifts(
-                image[yb:yb + header['NAXIS2'], xl:xl + header['NAXIS1']],
-                image_ref[yb:yb + header['NAXIS2'], xl:xl + header['NAXIS1']])
+            yoff, xoff = cross_correlation_shifts(image, image_ref_trimmed)
 
             # shift the image to the nearest pixel
             image_aligned_to_ref = CCDData(roll_zeropad(
                 roll_zeropad(image, int(yoff), 1), int(xoff),
-                0)[yb:yb + header['NAXIS2'],
-                   xl:xl + header['NAXIS1']].astype('float32'),
+                0).astype('float32'),
                                            header=header,
                                            unit=ccddata_unit)
-            # update wcs
-            image_aligned_to_ref.wcs = f_ref.wcs
+
+            image_aligned_to_ref_trimmed = Cutout2D(
+                image_aligned_to_ref.data,
+                position=(centre_x, centre_y),
+                size=(width_x, width_y),
+                wcs=image_aligned_to_ref.wcs)
+
+            new_mask = Cutout2D(
+                image_aligned_to_ref.mask,
+                position=(centre_x, centre_y),
+                size=(width_x, width_y),
+                wcs=image_aligned_to_ref.wcs)
+
+            image_aligned_to_ref.data = image_aligned_to_ref_trimmed.data
+            image_aligned_to_ref.wcs = image_aligned_to_ref_trimmed.wcs
+            image_aligned_to_ref.mask = new_mask
+            image_aligned_to_ref.header['NAXIS1'] = width_x
+            image_aligned_to_ref.header['NAXIS2'] = width_y
 
         # append to the combiner if stacking
         if return_combiner:
@@ -656,12 +703,12 @@ def align_images(file_list,
 
         combiner.clip_extrema(nlow=combine_n_low, nhigh=combine_n_high)
 
-        return aligned_file_list, combiner
+        return aligned_file_list, combiner, (centre_x, centre_y)
 
     # Return only the file list for the aligned images
     else:
 
-        return aligned_file_list, None
+        return aligned_file_list, None, (centre_x, centre_y)
 
 
 def get_background(data,
@@ -1967,6 +2014,7 @@ def do_photometry(diff_image_list,
                   output_folder='.',
                   save_individual=False,
                   individual_overwrite=True,
+                  return_tbl=True,
                   save_tbl=True,
                   tbl_overwrite=True,
                   tbl_filename='photometry_tbl'):
@@ -1996,6 +2044,13 @@ def do_photometry(diff_image_list,
         Table of the photometry extracted from all the images.
 
     '''
+
+    if (not return_tbl) & (not save_individual):
+        print(
+            'You are not saving photometry of individual frames or returning '
+            'the combined photometric table. Please set either or both of '
+            'return_tbl and save_individual to True.')
+        return None
 
     result_tab = []
     MJD = []
@@ -2028,8 +2083,10 @@ def do_photometry(diff_image_list,
                                                             fit_size))
         # Store the photometry
         photometry_i = photometry(image=image, init_guesses=pos)
-        result_tab.append(photometry_i)
-        result_tab[i]['mjd'] = np.ones(len(result_tab[i])) * MJD
+
+        if return_tbl:
+            result_tab.append(photometry_i)
+            result_tab[i]['mjd'] = np.ones(len(result_tab[i])) * MJD
 
         if save_individual:
 
@@ -2043,15 +2100,17 @@ def do_photometry(diff_image_list,
             else:
                 np.save(individual_output_path, photometry_i)
 
-    if save_tbl:
-        output_path = os.path.join(output_folder, tbl_filename)
-        if os.path.exists(output_path) and (not tbl_overwrite):
-            print(output_path + ' already exists. Use a different name or set '
-                  'overwrite to True. Photometry is not saved to disk.')
-        else:
-            np.save(output_path, result_tab)
+    if return_tbl:
+        if save_tbl:
+            output_path = os.path.join(output_folder, tbl_filename)
+            if os.path.exists(output_path) and (not tbl_overwrite):
+                print(output_path +
+                      ' already exists. Use a different name or set '
+                      'overwrite to True. Photometry is not saved to disk.')
+            else:
+                np.save(output_path, result_tab)
 
-    return result_tab
+        return result_tab
 
 
 def get_lightcurve(photometry_list,
@@ -2111,31 +2170,29 @@ def get_lightcurve(photometry_list,
         source_id = np.arange(len(photometry_list[0])).astype('int') + 1
 
     for id_i in source_id:
-        flux_i = []
-        flux_err_i = []
-        flux_fit_i = []
-        mjd_i = []
+        n = len(photometry_list)
+        flux_i = np.zeros(n)
+        flux_err_i = np.zeros(n)
+        flux_fit_i = np.zeros(n)
+        mjd_i = np.zeros(n)
 
-        for list_i in photometry_list:
+        for j, list_i in enumerate(photometry_list):
             mask = (list_i['id'] == id_i)
-            flux_i.append(list_i[mask]['flux_0'])
-            flux_err_i.append(list_i[mask]['flux_unc'])
-            flux_fit_i.append(list_i[mask]['flux_fit'])
-            mjd_i.append(list_i[mask]['mjd'])
+            if mask.any():
+                flux_i[j] = list_i[mask]['flux_0'].data[0]
+                flux_err_i[j] = list_i[mask]['flux_unc'].data[0]
+                flux_fit_i[j] = list_i[mask]['flux_fit'].data[0]
+                mjd_i[j] = list_i[mask]['mjd'].data[0]
 
-        flux_i = np.array(flux_i)
-        flux_fit_i = np.array(flux_fit_i)
-        flux_err_i = np.array(flux_err_i)
-        mjd_i = np.array(mjd_i)
         flux.append(flux_i)
         flux_fit.append(flux_fit_i)
         flux_err.append(flux_err_i)
         mjd.append(mjd_i)
 
-    mjd = np.array(mjd).T[0].T
-    flux = np.array(flux).T[0].T
-    flux_fit = np.array(flux_fit).T[0].T
-    flux_err = np.array(flux_err).T[0].T
+    mjd = np.array(mjd)
+    flux = np.array(flux)
+    flux_fit = np.array(flux_fit)
+    flux_err = np.array(flux_err)
 
     if plot:
         if use_flux_fit:
@@ -2244,22 +2301,22 @@ def plot_lightcurve(mjd,
     if isinstance(source_id, int):
         source_id = [source_id]
 
-    if np.shape(np.shape(flux))[0] == 1:
+    if np.shape(flux)[0] == 1:
 
-        order = np.argsort(mjd)
+        order = np.argsort(mjd)[0]
         plt.figure(figsize=(8, 8))
 
         if source_id is None:
-            plt.errorbar(mjd[order],
-                         flux[order],
-                         yerr=flux_err[order],
-                         fmt='o',
+            plt.errorbar(mjd[0][order],
+                         flux[0][order],
+                         yerr=flux_err[0][order],
+                         fmt='o-',
                          markersize=3)
         else:
-            plt.errorbar(mjd[order],
-                         flux[order],
-                         yerr=flux_err[order],
-                         fmt='o',
+            plt.errorbar(mjd[0][order],
+                         flux[0][order],
+                         yerr=flux_err[0][order],
+                         fmt='o-',
                          markersize=3,
                          label=str(source_id))
 
@@ -2272,7 +2329,7 @@ def plot_lightcurve(mjd,
             plt.legend()
 
         if save_figure:
-            plt.savefig(os.path.join(output_folder, 'lightcurve.png'))
+            plt.savefig(os.path.join(output_folder, 'lightcurve_' + str(source_id[0]) + '.png'))
 
     else:
 
@@ -2292,7 +2349,7 @@ def plot_lightcurve(mjd,
                 ax.errorbar(mjd[i][order],
                             flux[i][order],
                             yerr=(flux_err[i][order], flux_err[i][order]),
-                            fmt='o',
+                            fmt='o-',
                             markersize=5)
             else:
                 ax.errorbar(mjd[i][order],

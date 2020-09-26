@@ -27,14 +27,14 @@ file_list = generate_file_list(input_folder, output_folder=output_folder)
 # cross-correlate to align the images (because wcs fit fails regularly in dense field)
 # see also https://image-registration.readthedocs.io/en/latest/index.html
 # see also https://ccdproc.readthedocs.io/en/latest/image_combination.html
-aligned_file_list, combiner = align_images(file_list=file_list,
-                                           output_folder=output_folder,
-                                           overwrite=overwrite,
-                                           xl=200,
-                                           xr=200,
-                                           yb=200,
-                                           yt=200,
-                                           return_combiner=return_combiner)
+aligned_file_list, combiner, (x, y) = align_images(
+    file_list=file_list,
+    output_folder=output_folder,
+    overwrite=overwrite,
+    ra=ra,
+    dec=dec,
+    size=500,
+    return_combiner=return_combiner)
 if return_combiner:
     # can also choose median_combine()
     data_stacked = combiner.average_combine()
@@ -43,18 +43,6 @@ if return_combiner:
 else:
     data_stacked = fits.open(os.path.join(output_folder,
                                           'stacked.fits'))[0].data
-
-# Get the pixel coordinate of the target in the aligned frame
-f_ref = CCDData.read(aligned_file_list[0], unit=u.ct)
-x, y = f_ref.wcs.all_world2pix(ra,
-                               dec,
-                               1,
-                               tolerance=1e-4,
-                               maxiter=20,
-                               adaptive=False,
-                               detect_divergence=True,
-                               quiet=False)
-print('The centroid of the target is at pixel ({}, {}).'.format(x, y))
 
 # background subtraction
 # see also https://photutils.readthedocs.io/en/stable/background.html
@@ -70,8 +58,8 @@ data_stacked_bkg_sub = data_stacked - bkg.background
 stars, stars_tbl = get_good_stars(data_stacked_bkg_sub,
                                   threshold=100.,
                                   box_size=25,
-                                  npeaks=225,
-                                  edge_size=150,
+                                  npeaks=100,
+                                  edge_size=25,
                                   output_folder=output_folder)
 
 # build the psf using the stacked image
@@ -161,14 +149,16 @@ source_id, mjd, flux, flux_err, flux_fit = get_lightcurve(
 #plot_lightcurve(mjd, flux, flux_err, same_figure=False)
 
 # Explicitly plot 1 lightcurve
-target = 3
-plot_lightcurve(mjd[np.where(source_id == target)[0]],
-                flux[np.where(source_id == target)[0]],
-                flux_err[np.where(source_id == target)[0]],
+target = 13
+target_arg = (source_id == target)
+plot_lightcurve(mjd[target_arg],
+                flux[target_arg],
+                flux_err[target_arg],
                 source_id=target,
                 output_folder=output_folder)
 
 # Explicitly plot a few lightcurves
+'''
 good_stars = [1, 5, 8, 10, 3]
 mjd_good_stars = np.array([mjd[i] for i in good_stars])
 flux_good_stars = np.array([flux[i] for i in good_stars])
@@ -187,3 +177,4 @@ plot_lightcurve(mjd_good_stars,
                 flux_err_good_stars,
                 source_id=good_stars,
                 output_folder=output_folder)
+'''
