@@ -903,8 +903,10 @@ def get_good_stars(data,
         stars_tbl['y'] = y + edge_size
 
         if save_stars_tbl:
-            stars_tbl_output_path = os.path.join(output_folder, stars_tbl_filename + '.npy')
-            if os.path.exists(stars_tbl_output_path) and (not stars_tbl_overwrite):
+            stars_tbl_output_path = os.path.join(output_folder,
+                                                 stars_tbl_filename + '.npy')
+            if os.path.exists(stars_tbl_output_path) and (
+                    not stars_tbl_overwrite):
                 print(
                     stars_tbl_output_path + ' already exists. Use a '
                     'different name or set overwrite to True. EPSFModel is not '
@@ -919,7 +921,8 @@ def get_good_stars(data,
     stars = extract_stars(nddata, catalogs=stars_tbl[:npeaks], size=size)
 
     if save_stars:
-        stars_output_path = os.path.join(output_folder, stars_filename + '.pbl')
+        stars_output_path = os.path.join(output_folder,
+                                         stars_filename + '.pbl')
         if os.path.exists(stars_output_path) and (not stars_overwrite):
             print(stars_output_path + ' already exists. Use a different '
                   'name or set overwrite to True. EPSFStar is not saved to '
@@ -1451,7 +1454,7 @@ def generate_hotpants_script(ref_path,
                              nbs=None,
                              nbz=None,
                              pca=None,
-                             v=None):
+                             v=0):
     '''
     This function is to genereate the shell script for running HOTPANTS, it
     always returns the list of strings that can be executed in shell.
@@ -1812,7 +1815,8 @@ def run_hotpants(script, output_folder='.', shell=None):
             out_file.write(process.stdout)
 
     diff_image_list = []
-    with open(os.path.join(output_folder, 'diff_file_list.txt'), 'w+') as out_file:
+    with open(os.path.join(output_folder, 'diff_file_list.txt'),
+              'w+') as out_file:
         for i in script:
             filepath = i.split(' ')[2].split('.')[0] + '_diff.fits'
             out_file.write(filepath + '\n')
@@ -1831,6 +1835,9 @@ def find_star(data,
               sharplo=0.,
               sharphi=2.,
               n_threshold=5.,
+              x=None,
+              y=None,
+              radius=50,
               show=False,
               save_figure=True,
               save_source_list=True,
@@ -1865,6 +1872,12 @@ def find_star(data,
         Maximum sharpness.
     n_threshold: float (Default: 5.)
         Minimum threshold of a detection.
+    x: float or None (Default: None)
+        Pixel x-cooredinate of the target. None includes everything detected.
+    y: float or None (Default: None)
+        Pixel y-cooredinate of the target. None includes everything detected.
+    radius: float (Default: 50)
+        Number of pixels from (x, y) to be included.
     show: boolean (Default: False)
         Set to true to display the finder chart with annotated source ID.
     args:
@@ -1873,7 +1886,7 @@ def find_star(data,
     Return
     ------
     source_list: Table
-        Astropy Table of the souurce positions.
+        Astropy Table of the source positions.
 
     '''
 
@@ -1894,15 +1907,24 @@ def find_star(data,
     # Find the stars
     source_list = star_finder(data)
 
+    # Only include stars within the given limit
+    if (x is not None) and (y is not None):
+        distance = np.sqrt((x - source_list['xcentroid'].data)**2. +
+                           (y - source_list['ycentroid'].data)**2.)
+
+        source_list = source_list[distance < radius]
+
     # Format the list
     for col in source_list.colnames:
         source_list[col].info.format = '%.10g'
 
     # Display the star finder
     if show:
+
         positions = np.transpose(
             (source_list['xcentroid'], source_list['ycentroid']))
         apertures = photutils.CircularAperture(positions, r=5.)
+
         # retain -2sigma to +3sigma
         norm = simple_norm(data,
                            stretch='log',
@@ -1911,6 +1933,7 @@ def find_star(data,
         plt.figure(figsize=(8, 8))
         plt.imshow(data, cmap='binary', origin='lower', norm=norm)
         apertures.plot(color='#0547f9', lw=1.5)
+
         for source in source_list:
             plt.annotate(str(source['id']),
                          (source['xcentroid'], source['ycentroid']))
@@ -1920,6 +1943,7 @@ def find_star(data,
         plt.ylabel('y / pixel')
         plt.tight_layout()
         plt.grid(color='greenyellow', ls=':', lw=0.5)
+
         if save_figure:
             plt.savefig(os.path.join(output_folder, 'star_finder.png'))
 
@@ -1940,10 +1964,12 @@ def do_photometry(diff_image_list,
                   sigma_list,
                   bkg_estimator=MMMBackground(),
                   fitter=LevMarLSQFitter(),
-                  save_tbl=True,
-                  overwrite=True,
                   output_folder='.',
-                  filename='photometry_tbl'):
+                  save_individual=False,
+                  individual_overwrite=True,
+                  save_tbl=True,
+                  tbl_overwrite=True,
+                  tbl_filename='photometry_tbl'):
     '''
     Perform forced PSF photometry on the list of differenced images based on
     the positions found from the reference/stacked image, the PSF is modelled
@@ -2001,16 +2027,29 @@ def do_photometry(diff_image_list,
                                                   fitshape=(fit_size,
                                                             fit_size))
         # Store the photometry
-        result_tab.append(photometry(image=image, init_guesses=pos))
+        photometry_i = photometry(image=image, init_guesses=pos)
+        result_tab.append(photometry_i)
         result_tab[i]['mjd'] = np.ones(len(result_tab[i])) * MJD
 
+        if save_individual:
+
+            individual_output_path = diff_image_path.split(
+                '.')[0] + '_photometry'
+            if os.path.exists(individual_output_path) and (
+                    not individual_overwrite):
+                print(individual_output_path + ' already exists. Use a '
+                      'different name or set overwrite to True. Photometry is '
+                      'not saved to disk.')
+            else:
+                np.save(individual_output_path, photometry_i)
+
     if save_tbl:
-        output_path = os.path.join(output_folder, filename)
-        if os.path.exists(output_path) and (not overwrite):
+        output_path = os.path.join(output_folder, tbl_filename)
+        if os.path.exists(output_path) and (not tbl_overwrite):
             print(output_path + ' already exists. Use a different name or set '
                   'overwrite to True. Photometry is not saved to disk.')
         else:
-            np.save(output_path, save_tbl)
+            np.save(output_path, result_tab)
 
     return result_tab
 

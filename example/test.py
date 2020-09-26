@@ -2,17 +2,22 @@ import sys
 sys.path.append('..')
 
 import numpy as np
+from astropy import units as u
 from astropy.io import fits
+from astropy.nddata import CCDData
 from matplotlib import pyplot as plt
 
 from pyhotpants import *
 
 plt.ion()
 
+# parameters
 input_folder = 'test_data'
 output_folder = 'test_output'
 
-# parameters
+ra = 253.50009268021
+dec = 62.89923147256
+
 overwrite = True
 return_combiner = True
 
@@ -38,6 +43,18 @@ if return_combiner:
 else:
     data_stacked = fits.open(os.path.join(output_folder,
                                           'stacked.fits'))[0].data
+
+# Get the pixel coordinate of the target in the aligned frame
+f_ref = CCDData.read(aligned_file_list[0], unit=u.ct)
+x, y = f_ref.wcs.all_world2pix(ra,
+                               dec,
+                               1,
+                               tolerance=1e-4,
+                               maxiter=20,
+                               adaptive=False,
+                               detect_divergence=True,
+                               quiet=False)
+print('The centroid of the target is at pixel ({}, {}).'.format(x, y))
 
 # background subtraction
 # see also https://photutils.readthedocs.io/en/stable/background.html
@@ -65,7 +82,7 @@ epsf, fitted_stars, oversampling_factor = build_psf(
     maxiters=20,
     create_figure=True,
     save_figure=True,
-                                output_folder=output_folder)
+    output_folder=output_folder)
 
 # Get the FWHM
 # for the stack
@@ -119,15 +136,19 @@ diff_image_list = run_hotpants(diff_image_script, output_folder=output_folder)
 source_list = find_star(data_stacked_bkg_sub,
                         fwhm=sigma_x_stack * 2.355,
                         n_threshold=10.,
+                        x=x,
+                        y=y,
+                        radius=300,
                         show=True,
                         output_folder=output_folder)
 
-# Use the psf and stars to perform photometry on the stacked image
+# Use the psf and stars to perform forced photometry on the differenced images
 # see also https://photutils.readthedocs.io/en/latest/psf.html
 photometry_list = do_photometry(diff_image_list,
                                 source_list,
                                 sigma_list,
-                                output_folder=output_folder)
+                                output_folder=output_folder,
+                                save_individual=True)
 
 # get lightcurves
 source_id, mjd, flux, flux_err, flux_fit = get_lightcurve(
@@ -140,7 +161,7 @@ source_id, mjd, flux, flux_err, flux_fit = get_lightcurve(
 #plot_lightcurve(mjd, flux, flux_err, same_figure=False)
 
 # Explicitly plot 1 lightcurve
-target = 10
+target = 3
 plot_lightcurve(mjd[np.where(source_id == target)[0]],
                 flux[np.where(source_id == target)[0]],
                 flux_err[np.where(source_id == target)[0]],
@@ -148,7 +169,7 @@ plot_lightcurve(mjd[np.where(source_id == target)[0]],
                 output_folder=output_folder)
 
 # Explicitly plot a few lightcurves
-good_stars = [1, 3, 5, 8, 10]
+good_stars = [1, 5, 8, 10, 3]
 mjd_good_stars = np.array([mjd[i] for i in good_stars])
 flux_good_stars = np.array([flux[i] for i in good_stars])
 flux_err_good_stars = np.array([flux_err[i] for i in good_stars])
