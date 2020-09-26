@@ -35,6 +35,7 @@ aligned_file_list, combiner, (x, y) = align_images(
     dec=dec,
     size=500,
     return_combiner=return_combiner)
+
 if return_combiner:
     # can also choose median_combine()
     data_stacked = combiner.average_combine()

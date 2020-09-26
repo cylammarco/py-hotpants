@@ -538,18 +538,20 @@ def align_images(file_list,
     # Get the pixel coordinate of the target in the reference frame
     if (ra is not None) and (dec is not None):
         centre_x, centre_y = f_ref.wcs.all_world2pix(ra,
-                                     dec,
-                                     1,
-                                     tolerance=1e-4,
-                                     maxiter=20,
-                                     adaptive=False,
-                                     detect_divergence=True,
-                                     quiet=False)
+                                                     dec,
+                                                     1,
+                                                     tolerance=1e-4,
+                                                     maxiter=20,
+                                                     adaptive=False,
+                                                     detect_divergence=True,
+                                                     quiet=False)
     else:
         centre_x = int(len_x / 2)
         centre_y = int(len_y / 2)
 
-    print('The centroid of the target in the reference frame is at pixel ({}, {}).'.format(centre_x, centre_y))
+    print(
+        'The centroid of the target in the reference frame is at pixel ({}, {}).'
+        .format(centre_x, centre_y))
 
     # Get the cutout
     image_ref_trimmed = Cutout2D(image_ref.data,
@@ -560,20 +562,22 @@ def align_images(file_list,
     # Get the pixel coordinate of the target in the reference frame AFTER
     # cutout
     if (ra is not None) and (dec is not None):
-        centre_x, centre_y = image_ref_trimmed.wcs.all_world2pix(ra,
-                                     dec,
-                                     1,
-                                     tolerance=1e-4,
-                                     maxiter=20,
-                                     adaptive=False,
-                                     detect_divergence=True,
-                                     quiet=False)
+        centre_x, centre_y = image_ref_trimmed.wcs.all_world2pix(
+            ra,
+            dec,
+            1,
+            tolerance=1e-4,
+            maxiter=20,
+            adaptive=False,
+            detect_divergence=True,
+            quiet=False)
     else:
         centre_x = int(image_ref_trimmed.size[0] / 2)
         centre_y = int(image_ref_trimmed.size[1] / 2)
 
-    print('The centroid of the target in the reference frame CUTOUT is at pixel ({}, {}).'.format(centre_x, centre_y))
-
+    print(
+        'The centroid of the target in the reference frame CUTOUT is at pixel ({}, {}).'
+        .format(centre_x, centre_y))
 
     if not os.path.exists(output_folder):
         os.mkdir(output_folder)
@@ -649,11 +653,10 @@ def align_images(file_list,
                 size=(width_x, width_y),
                 wcs=image_aligned_to_ref.wcs)
 
-            new_mask = Cutout2D(
-                image_aligned_to_ref.mask,
-                position=(centre_x, centre_y),
-                size=(width_x, width_y),
-                wcs=image_aligned_to_ref.wcs)
+            new_mask = Cutout2D(image_aligned_to_ref.mask,
+                                position=(centre_x, centre_y),
+                                size=(width_x, width_y),
+                                wcs=image_aligned_to_ref.wcs)
 
             image_aligned_to_ref.data = image_aligned_to_ref_trimmed.data
             image_aligned_to_ref.wcs = image_aligned_to_ref_trimmed.wcs
@@ -1192,10 +1195,28 @@ def fit_gaussian_for_fwhm(psf, fit_sigma=False):
     psf_y = np.sum(psf.data, axis=1)
     pguess_x = max(psf_x), 0, len(psf_x) / 2., len(psf_x) / 10.
     pguess_y = max(psf_y), 0, len(psf_y) / 2., len(psf_y) / 10.
+    bound_x = ([0, min(psf_x), 0,
+                0], [max(psf_x),
+                     max(psf_x),
+                     len(psf_x),
+                     len(psf_x) / 2.])
+    bound_y = ([0, min(psf_y), 0,
+                0], [max(psf_y),
+                     max(psf_y),
+                     len(psf_y),
+                     len(psf_y) / 2.])
 
     # see also https://photutils.readthedocs.io/en/stable/detection.html
-    popt_x, _ = curve_fit(_gaus, np.arange(len(psf_x)), psf_x, p0=pguess_x)
-    popt_y, _ = curve_fit(_gaus, np.arange(len(psf_y)), psf_y, p0=pguess_y)
+    popt_x, _ = curve_fit(_gaus,
+                          np.arange(len(psf_x)),
+                          psf_x,
+                          bounds=bound_x,
+                          p0=pguess_x)
+    popt_y, _ = curve_fit(_gaus,
+                          np.arange(len(psf_y)),
+                          psf_y,
+                          bounds=bound_y,
+                          p0=pguess_y)
     sigma_x = popt_x[3]
     sigma_y = popt_y[3]
 
@@ -2318,7 +2339,7 @@ def plot_lightcurve(mjd,
                          yerr=flux_err[0][order],
                          fmt='o-',
                          markersize=3,
-                         label=str(source_id))
+                         label=str(source_id[0]))
 
         plt.xlabel(xlabel)
         plt.ylabel(ylabel)
@@ -2329,7 +2350,9 @@ def plot_lightcurve(mjd,
             plt.legend()
 
         if save_figure:
-            plt.savefig(os.path.join(output_folder, 'lightcurve_' + str(source_id[0]) + '.png'))
+            plt.savefig(
+                os.path.join(output_folder,
+                             'lightcurve_' + str(source_id[0]) + '.png'))
 
     else:
 
