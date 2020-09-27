@@ -1195,15 +1195,15 @@ def fit_gaussian_for_fwhm(psf, fit_sigma=False):
     psf_y = np.sum(psf.data, axis=1)
     pguess_x = max(psf_x), 0, len(psf_x) / 2., len(psf_x) / 10.
     pguess_y = max(psf_y), 0, len(psf_y) / 2., len(psf_y) / 10.
-    bound_x = ([0, min(psf_x), 0,
-                0], [max(psf_x),
-                     max(psf_x),
-                     len(psf_x),
+    bound_x = ([0, -np.inf, len(psf_y) / 4.,
+                0], [max(psf_x) * 1.5,
+                     np.inf,
+                     len(psf_x) * 3. / 4.,
                      len(psf_x) / 2.])
-    bound_y = ([0, min(psf_y), 0,
-                0], [max(psf_y),
-                     max(psf_y),
-                     len(psf_y),
+    bound_y = ([0, -np.inf, len(psf_y) / 4.,
+                0], [max(psf_y) * 1.5,
+                     np.inf,
+                     len(psf_y) * 3. / 4.,
                      len(psf_y) / 2.])
 
     # see also https://photutils.readthedocs.io/en/stable/detection.html
@@ -1221,8 +1221,10 @@ def fit_gaussian_for_fwhm(psf, fit_sigma=False):
     sigma_y = popt_y[3]
 
     if fit_sigma:
+        print('sigma_x = {} and sigma_y = {}').format(sigma_x, sigma_y)
         return sigma_x, sigma_y
     else:
+        print('fwhm_x = {} and fwhm_y = {}').format(sigma_x * 2.355, sigma_y * 2.355)
         return sigma_x * 2.355, sigma_y * 2.355
 
 
@@ -1851,7 +1853,7 @@ def generate_hotpants_script(ref_path,
         return script
 
 
-def run_hotpants(script, output_folder='.', shell=None):
+def run_hotpants(script, output_folder='.', overwrite=True, shell=None):
     '''
     Compute the difference images with HOTPANTS by running shell commands.
 
@@ -1875,12 +1877,16 @@ def run_hotpants(script, output_folder='.', shell=None):
     # Pipe the script to a log file.
     with open(os.path.join(output_folder, 'diff_image.log'), 'w+') as out_file:
         for i in script:
-            process = subprocess.run(i,
-                                     stdout=subprocess.PIPE,
-                                     shell=True,
-                                     executable=shell,
-                                     universal_newlines=True)
-            out_file.write(process.stdout)
+            filepath = i.split(' ')[2].split('.')[0] + '_diff.fits'
+            if (not os.path.exists(filepath)) or overwrite:
+                process = subprocess.run(i,
+                                         stdout=subprocess.PIPE,
+                                         shell=True,
+                                         executable=shell,
+                                         universal_newlines=True)
+                out_file.write(process.stdout)
+            else:
+                continue
 
     diff_image_list = []
     with open(os.path.join(output_folder, 'diff_file_list.txt'),
@@ -2082,7 +2088,8 @@ def do_photometry(diff_image_list,
 
     n = len(diff_image_list)
     for i, diff_image_path in enumerate(diff_image_list):
-        print('Doing photometry on frame ' + str(i + 1) + ' of ' + str(n))
+        print('Doing photometry on frame ' + str(i + 1) + ' of ' + str(n) +'.')
+        print(diff_image_path)
         fitsfile = fits.open(diff_image_path)[0]
         image = fitsfile.data
 
@@ -2093,6 +2100,7 @@ def do_photometry(diff_image_list,
         daogroup = DAOGroup(fwhm_i)
 
         # Set to do forced photometry
+        print('Sigma = ' + str(sigma_i) + ' pixels.')
         psf_model = IntegratedGaussianPRF(sigma=sigma_i)
         psf_model.x_0.fixed = True
         psf_model.y_0.fixed = True
