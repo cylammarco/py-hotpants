@@ -1221,10 +1221,10 @@ def fit_gaussian_for_fwhm(psf, fit_sigma=False):
     sigma_y = popt_y[3]
 
     if fit_sigma:
-        print('sigma_x = {} and sigma_y = {}').format(sigma_x, sigma_y)
+        print('sigma_x = {} and sigma_y = {}'.format(sigma_x, sigma_y))
         return sigma_x, sigma_y
     else:
-        print('fwhm_x = {} and fwhm_y = {}').format(sigma_x * 2.355, sigma_y * 2.355)
+        print('fwhm_x = {} and fwhm_y = {}'.format(sigma_x * 2.355, sigma_y * 2.355))
         return sigma_x * 2.355, sigma_y * 2.355
 
 
