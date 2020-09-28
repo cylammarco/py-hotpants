@@ -2112,10 +2112,11 @@ def do_photometry(diff_image_list,
                                                             fit_size))
         # Store the photometry
         photometry_i = photometry(image=image, init_guesses=pos)
+        photometry_i['mjd'] = np.ones(len(photometry_i)) * MJD
+        photometry_i['id'] = source_list['id']
 
         if return_tbl:
             result_tab.append(photometry_i)
-            result_tab[i]['mjd'] = np.ones(len(result_tab[i])) * MJD
 
         if save_individual:
 

@@ -131,7 +131,7 @@ source_list = find_star(data_stacked_bkg_sub,
                         show=True,
                         output_folder=output_folder)
 
-# Use the psf and stars to perform forced photometry on the differenced images
+# Use the psf and stars to perdo forced photometry on the differenced images
 # see also https://photutils.readthedocs.io/en/latest/psf.html
 photometry_list = do_photometry(diff_image_list,
                                 source_list,
@@ -152,11 +152,19 @@ source_id, mjd, flux, flux_err, flux_fit = get_lightcurve(
 # Explicitly plot 1 lightcurve
 target = 13
 target_arg = (source_id == target)
-plot_lightcurve(mjd[target_arg],
+period = 33.625 / 60. / 24.
+period = 1
+#scatter((mjd[target_arg] / period) % 1, flux[target_arg], s=1)
+#ylim(-5000, 5000)
+
+
+plot_lightcurve((mjd[target_arg] / period) % 1,
                 flux[target_arg],
                 flux_err[target_arg],
                 source_id=target,
                 output_folder=output_folder)
+
+
 
 # Explicitly plot a few lightcurves
 '''
