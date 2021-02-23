@@ -1,0 +1,6 @@
+test_output/q_e_20200830_1_41_1_1_aligned.fits
+test_output/q_e_20200830_1_21_1_1_aligned.fits
+test_output/q_e_20200830_1_51_1_1_aligned.fits
+test_output/q_e_20200830_1_31_1_1_aligned.fits
+test_output/q_e_20200830_1_1_1_1_aligned.fits
+test_output/q_e_20200830_1_11_1_1_aligned.fits

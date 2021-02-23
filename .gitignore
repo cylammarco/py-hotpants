@@ -131,3 +131,7 @@ dmypy.json
 # Mac
 .DS_*
 ._DS*
+
+# Ignore output
+example/test_output/*.fits
+example/test_output/*.npy
