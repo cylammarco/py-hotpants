@@ -1,6 +1,7 @@
 import glob
 import os
 import pickle
+import re
 import subprocess
 import sys
 import warnings
@@ -19,7 +20,9 @@ from astropy.table import Table
 from astropy.utils.exceptions import AstropyWarning
 from astropy.visualization import simple_norm
 from astropy.wcs import WCS
+from astroscrappy import detect_cosmics
 from matplotlib import pyplot as plt
+from photutils import DAOStarFinder
 from photutils.background import MMMBackground, MADStdBackgroundRMS
 from photutils.psf import extract_stars, IntegratedGaussianPRF, DAOGroup
 from scipy.optimize import curve_fit
@@ -27,7 +30,7 @@ from scipy.optimize import curve_fit
 warnings.simplefilter('ignore', category=AstropyWarning)
 
 
-def generate_file_list(input_folder, output_folder, filetype='fits'):
+def generate_file_list(input_folder, output_folder, extension='fits'):
     '''
     Genearte a text file containing all the files to be processed. It also
     returns the list.
@@ -40,7 +43,7 @@ def generate_file_list(input_folder, output_folder, filetype='fits'):
     output_folder: str
         Folder for the outputs. If the folder does not exist, it will be
         created.
-    filetype: str (Default: fits)
+    extension: str (Default: fits)
         Extension of the files to be processed
 
     Returns
@@ -50,12 +53,14 @@ def generate_file_list(input_folder, output_folder, filetype='fits'):
     '''
 
     # Get the file list from the folder
-    file_list = glob.glob(os.path.join(input_folder, "*." + filetype))
+    file_list = glob.glob(os.path.join(input_folder, "*." + extension))
 
     # Sort alpha-numerically
-    sorted(file_list,
-           key=lambda item: (int(item.partition(' ')[0])
-                             if item[0].isdigit() else float('inf'), item))
+
+    convert = lambda text: int(text) if text.isdigit() else text
+    alphanum_key = lambda key: [convert(c) for c in re.split('([0-9]+)', key)]
+
+    sorted(file_list, key=alphanum_key)
     if not os.path.exists(output_folder):
         os.mkdir(output_folder)
 
@@ -452,6 +457,9 @@ def align_images(file_list,
                  sigma_clip_func=np.ma.mean,
                  clip_extrema_low_percentile=15.9,
                  clip_extrema_high_percentile=15.9,
+                 cr_clean=False,
+                 gain=1.0,
+                 readnoise=0.0,
                  save_list=True,
                  list_overwrite=True,
                  list_filename='aligned_file_list'):
@@ -509,6 +517,13 @@ def align_images(file_list,
         The lower rejection limit by percentage.
     clip_extrema_high_percentile: float (Default: 15.9)
         The upper rejction limit by percentage.
+    cr_clean: True (Default: False)
+        Use the astroscrappy.detect_cosmics() to remove cosmics. We
+        recommend you pre-clean the data instead of using this one.
+    gain: float (Default: 1.0)
+        Gain of the detector.
+    readnoise: float (Default: 0.0)
+        Readnoise of the detector (e-).
 
     Return
     ------
@@ -559,6 +574,16 @@ def align_images(file_list,
                                  size=(width_x, width_y),
                                  wcs=f_ref.wcs)
 
+    if cr_clean:
+        image_ref_trimmed.data = detect_cosmics(image_ref_trimmed.data,
+                                                gain=gain,
+                                                readnoise=readnoise,
+                                                inmask=None,
+                                                satlevel=np.inf,
+                                                sepmed=False,
+                                                cleantype='medmask',
+                                                fsmode='median')[1]
+
     # Get the pixel coordinate of the target in the reference frame AFTER
     # cutout
     if (ra is not None) and (dec is not None):
@@ -591,17 +616,26 @@ def align_images(file_list,
         print('Aligning image ' + str(i + 1) + ' of ' + str(len(file_list)) +
               '.')
         outfile_name = f_to_align.split('.')[0] + '_aligned.fits'
-        outfile_path = os.path.join(output_folder, outfile_name.split('/')[-1])
 
+        if os.name == 'nt':
+            outfile_path = os.path.join(output_folder,
+                                        outfile_name.split('\\')[-1])
+        else:
+            outfile_path = os.path.join(output_folder,
+                                        outfile_name.split('/')[-1])
+
+        ''' Some conditions to sort out
         # Check if file exists and whether to overwrite
         if os.path.exists(outfile_path):
-            if not overwrite:
-                print('Image already aligned, set overwrite to True to '
-                      'realign.')
-                aligned_file_list.append(outfile_path)
-                continue
+            print('Image already aligned, set overwrite to True to '
+                  'realign.')
+            aligned_file_list.append(outfile_path)
+        '''
 
         f = CCDData.read(f_to_align, unit=ccddata_unit)
+
+        if cr_clean:
+            f.data = detect_cosmics(f.data, gain=gain, readnoise=readnoise)[1]
 
         if method == 'wcs':
             # reproject the image to the WCS of the reference frame
@@ -613,25 +647,6 @@ def align_images(file_list,
                 add_keyword=add_keyword)
             nan_mask = np.isnan(image_aligned_to_ref.data)
             image_aligned_to_ref.data[nan_mask] = fill_value
-
-            # Make the cutout
-            image_aligned_to_ref_trimmed = Cutout2D(
-                image_aligned_to_ref.data,
-                position=(centre_x, centre_y),
-                size=(width_x, width_y),
-                wcs=image_aligned_to_ref.wcs)
-
-            new_mask = Cutout2D(image_aligned_to_ref.mask,
-                                position=(centre_x, centre_y),
-                                size=(width_x, width_y),
-                                wcs=image_aligned_to_ref.wcs).data
-
-            # Update the output
-            image_aligned_to_ref.data = image_aligned_to_ref_trimmed.data
-            image_aligned_to_ref.wcs = image_aligned_to_ref_trimmed.wcs
-            image_aligned_to_ref.mask = new_mask
-            image_aligned_to_ref.header['NAXIS1'] = width_x
-            image_aligned_to_ref.header['NAXIS2'] = width_y
 
         elif method == 'cc':
             header = f.header
@@ -647,22 +662,22 @@ def align_images(file_list,
                                            header=header,
                                            unit=ccddata_unit)
 
-            image_aligned_to_ref_trimmed = Cutout2D(
-                image_aligned_to_ref.data,
-                position=(centre_x, centre_y),
-                size=(width_x, width_y),
-                wcs=image_aligned_to_ref.wcs)
+        # Make the cutout
+        image_aligned_to_ref_trimmed = Cutout2D(image_aligned_to_ref.data,
+                                                position=(centre_x, centre_y),
+                                                size=(width_x, width_y),
+                                                wcs=image_aligned_to_ref.wcs)
 
-            new_mask = Cutout2D(image_aligned_to_ref.mask,
-                                position=(centre_x, centre_y),
-                                size=(width_x, width_y),
-                                wcs=image_aligned_to_ref.wcs)
+        new_mask = Cutout2D(image_aligned_to_ref.mask,
+                            position=(centre_x, centre_y),
+                            size=(width_x, width_y),
+                            wcs=image_aligned_to_ref.wcs).data
 
-            image_aligned_to_ref.data = image_aligned_to_ref_trimmed.data
-            image_aligned_to_ref.wcs = image_aligned_to_ref_trimmed.wcs
-            image_aligned_to_ref.mask = new_mask
-            image_aligned_to_ref.header['NAXIS1'] = width_x
-            image_aligned_to_ref.header['NAXIS2'] = width_y
+        image_aligned_to_ref.data = image_aligned_to_ref_trimmed.data
+        image_aligned_to_ref.wcs = image_aligned_to_ref_trimmed.wcs
+        image_aligned_to_ref.mask = new_mask
+        image_aligned_to_ref.header['NAXIS1'] = width_x
+        image_aligned_to_ref.header['NAXIS2'] = width_y
 
         # append to the combiner if stacking
         if return_combiner:
@@ -821,7 +836,6 @@ def get_good_stars(data,
                    wcs=None,
                    stars_tbl=None,
                    edge_size=50,
-                   size=25,
                    output_folder='.',
                    save_stars=True,
                    stars_overwrite=True,
@@ -968,7 +982,7 @@ def get_good_stars(data,
 
     # assign npeaks mask again because if stars_tbl is given, the npeaks
     # have to be selected
-    stars = extract_stars(nddata, catalogs=stars_tbl[:npeaks], size=size)
+    stars = extract_stars(nddata, catalogs=stars_tbl[:npeaks], size=box_size)
 
     if save_stars:
         stars_output_path = os.path.join(output_folder,
@@ -1195,16 +1209,16 @@ def fit_gaussian_for_fwhm(psf, fit_sigma=False):
     psf_y = np.sum(psf.data, axis=1)
     pguess_x = max(psf_x), 0, len(psf_x) / 2., len(psf_x) / 10.
     pguess_y = max(psf_y), 0, len(psf_y) / 2., len(psf_y) / 10.
-    bound_x = ([0, -np.inf, len(psf_y) / 4.,
-                0], [max(psf_x) * 1.5,
-                     np.inf,
-                     len(psf_x) * 3. / 4.,
-                     len(psf_x) / 2.])
-    bound_y = ([0, -np.inf, len(psf_y) / 4.,
-                0], [max(psf_y) * 1.5,
-                     np.inf,
-                     len(psf_y) * 3. / 4.,
-                     len(psf_y) / 2.])
+    bound_x = ([0, -np.inf, len(psf_y) / 4., 0], [
+        max(psf_x) * 1.5, np.inf,
+        len(psf_x) * 3. / 4.,
+        len(psf_x) / 2.
+    ])
+    bound_y = ([0, -np.inf, len(psf_y) / 4., 0], [
+        max(psf_y) * 1.5, np.inf,
+        len(psf_y) * 3. / 4.,
+        len(psf_y) / 2.
+    ])
 
     # see also https://photutils.readthedocs.io/en/stable/detection.html
     popt_x, _ = curve_fit(_gaus,
@@ -1224,7 +1238,8 @@ def fit_gaussian_for_fwhm(psf, fit_sigma=False):
         print('sigma_x = {} and sigma_y = {}'.format(sigma_x, sigma_y))
         return sigma_x, sigma_y
     else:
-        print('fwhm_x = {} and fwhm_y = {}'.format(sigma_x * 2.355, sigma_y * 2.355))
+        print('fwhm_x = {} and fwhm_y = {}'.format(sigma_x * 2.355,
+                                                   sigma_y * 2.355))
         return sigma_x * 2.355, sigma_y * 2.355
 
 
@@ -1399,8 +1414,7 @@ def get_all_fwhm(file_list,
                                     error=error,
                                     wcs=wcs,
                                     stars_tbl=stars_tbl,
-                                    edge_size=50,
-                                    size=size,
+                                    edge_size=box_size,
                                     save_stars=False,
                                     save_stars_tbl=False)
 
@@ -2036,6 +2050,8 @@ def find_star(data,
 def do_photometry(diff_image_list,
                   source_list,
                   sigma_list,
+                  x_fixed=True,
+                  y_fixed=True,
                   bkg_estimator=MMMBackground(),
                   fitter=LevMarLSQFitter(),
                   output_folder='.',
@@ -2088,12 +2104,16 @@ def do_photometry(diff_image_list,
 
     n = len(diff_image_list)
     for i, diff_image_path in enumerate(diff_image_list):
-        print('Doing photometry on frame ' + str(i + 1) + ' of ' + str(n) +'.')
+        print('Doing photometry on frame ' + str(i + 1) + ' of ' + str(n) +
+              '.')
         print(diff_image_path)
         fitsfile = fits.open(diff_image_path)[0]
         image = fitsfile.data
 
-        MJD = float(fitsfile.header['MJD'])
+        try:
+            MJD = float(fitsfile.header['MJD'])
+        except:
+            MJD = 0.
         sigma_i = sigma_list[i]
         fwhm_i = sigma_i * 2.355
         fit_size = int(((fwhm_i * 3) // 2) * 2 + 1)
@@ -2102,8 +2122,8 @@ def do_photometry(diff_image_list,
         # Set to do forced photometry
         print('Sigma = ' + str(sigma_i) + ' pixels.')
         psf_model = IntegratedGaussianPRF(sigma=sigma_i)
-        psf_model.x_0.fixed = True
-        psf_model.y_0.fixed = True
+        psf_model.x_0.fixed = x_fixed
+        psf_model.y_0.fixed = y_fixed
         photometry = photutils.BasicPSFPhotometry(group_maker=daogroup,
                                                   bkg_estimator=bkg_estimator,
                                                   psf_model=psf_model,
