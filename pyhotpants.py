@@ -2110,9 +2110,17 @@ def do_photometry(diff_image_list,
         fitsfile = fits.open(diff_image_path)[0]
         image = fitsfile.data
 
-        try:
+        if 'MJD' in fitsfile.header:
             MJD = float(fitsfile.header['MJD'])
-        except:
+        elif 'mjd' in fitsfile.header:
+            MJD = float(fitsfile.header['mjd'])
+        elif 'JD' in fitsfile.header:
+            JD = float(fitsfile.header['JD'])
+            MJD = JD - 2400000.5
+        elif 'jd' in fitsfile.header:
+            JD = float(fitsfile.header['jd'])
+            MJD = JD - 2400000.5
+        else:
             MJD = 0.
         sigma_i = sigma_list[i]
         fwhm_i = sigma_i * 2.355
