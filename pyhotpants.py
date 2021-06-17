@@ -2109,16 +2109,17 @@ def do_photometry(diff_image_list,
         print(diff_image_path)
         fitsfile = fits.open(diff_image_path)[0]
         image = fitsfile.data
+        header = fitsfile.header
 
-        if 'MJD' in fitsfile.header:
-            MJD = float(fitsfile.header['MJD'])
-        elif 'mjd' in fitsfile.header:
-            MJD = float(fitsfile.header['mjd'])
-        elif 'JD' in fitsfile.header:
-            JD = float(fitsfile.header['JD'])
+        if 'MJD' in header:
+            MJD = float(header['MJD'])
+        elif 'mjd' in header:
+            MJD = float(header['mjd'])
+        elif 'JD' in header:
+            JD = float(header['JD'])
             MJD = JD - 2400000.5
-        elif 'jd' in fitsfile.header:
-            JD = float(fitsfile.header['jd'])
+        elif 'jd' in header:
+            JD = float(header['jd'])
             MJD = JD - 2400000.5
         else:
             MJD = 0.
@@ -2238,8 +2239,14 @@ def get_lightcurve(photometry_list,
             mask = (list_i['id'] == id_i)
             if mask.any():
                 flux_i[j] = list_i[mask]['flux_0'].data[0]
-                flux_err_i[j] = list_i[mask]['flux_unc'].data[0]
-                flux_fit_i[j] = list_i[mask]['flux_fit'].data[0]
+                try:
+                    flux_err_i[j] = list_i[mask]['flux_unc'].data[0]
+                except:
+                    pass
+                try:
+                    flux_fit_i[j] = list_i[mask]['flux_fit'].data[0]
+                except:
+                    pass
                 mjd_i[j] = list_i[mask]['mjd'].data[0]
 
         flux.append(flux_i)
