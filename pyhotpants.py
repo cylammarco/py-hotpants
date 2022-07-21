@@ -831,7 +831,6 @@ def get_good_stars(data,
                    border_width=None,
                    npeaks=100,
                    centroid_func=None,
-                   subpixel=True,
                    error=None,
                    wcs=None,
                    stars_tbl=None,
@@ -882,9 +881,6 @@ def get_good_stars(data,
         a 2D ndarray, have a mask keyword, and optionally an error keyword.
         The callable object must return a tuple of two 1D ndarrays,
         representing the x and y centroids, respectively.
-    subpixel: boolean (Defautl: True)
-        Perform sub-pixel fitting when computing the centroids. If False,
-        it will return the nearest pixel.
     error: array_like, optional (Default: None)
         The 2D array of the 1-sigma errors of the input data. error is used
         only if centroid_func is input (the error array is passed directly
@@ -954,7 +950,6 @@ def get_good_stars(data,
                                          border_width=border_width,
                                          npeaks=npeaks,
                                          centroid_func=centroid_func,
-                                         subpixel=subpixel,
                                          error=error,
                                          wcs=wcs)
 
@@ -1091,6 +1086,7 @@ def build_psf(stars,
 
     if create_figure:
         n_star = len(stars)
+        print(n_star)
         # Get the nearest square number to fill if the number of rows and/or
         # columns is/are not provided.
         if (stamps_nrows is None) and (stamps_ncols is None):
@@ -1260,7 +1256,6 @@ def get_all_fwhm(file_list,
                  border_width=None,
                  npeaks=None,
                  centroid_func=None,
-                 subpixel=False,
                  error=None,
                  wcs=None,
                  size=25,
@@ -1351,9 +1346,6 @@ def get_all_fwhm(file_list,
         a 2D ndarray, have a mask keyword, and optionally an error keyword.
         The callable object must return a tuple of two 1D ndarrays,
         representing the x and y centroids, respectively.
-    subpixel: boolean (Defautl: True)
-        Perform sub-pixel fitting when computing the centroids. If False,
-        it will return the nearest pixel.
     error: array_like, optional (Default: None)
         The 2D array of the 1-sigma errors of the input data. error is used
         only if centroid_func is input (the error array is passed directly
@@ -1410,7 +1402,6 @@ def get_all_fwhm(file_list,
                                     border_width=border_width,
                                     npeaks=npeaks,
                                     centroid_func=centroid_func,
-                                    subpixel=subpixel,
                                     error=error,
                                     wcs=wcs,
                                     stars_tbl=stars_tbl,
